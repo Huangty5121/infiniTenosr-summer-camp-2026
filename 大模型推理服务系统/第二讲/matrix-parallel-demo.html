@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>矩阵乘到并行推理演示</title>
+<style>
+:root {
+  --ink: #172033;
+  --muted: #5b657a;
+  --line: #d9dfeb;
+  --paper: #ffffff;
+  --soft: #f5f7fb;
+  --accent: #155bd5;
+  --teal: #0f766e;
+  --warn: #a45f05;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--soft);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 44px; }
+header { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 30px; line-height: 1.2; letter-spacing: 0; }
+p { margin: 8px 0 0; color: var(--muted); }
+.stage {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 330px;
+  gap: 16px;
+}
+.canvas-wrap,
+.side {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+canvas { display: block; width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; }
+.controls { display: grid; gap: 8px; margin-top: 12px; }
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { border-color: var(--accent); background: #eef5ff; color: var(--accent); font-weight: 700; }
+.side h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: 0; }
+.box { border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #f8fafc; margin-top: 10px; }
+.box strong { color: var(--teal); }
+.note { margin-top: 14px; padding: 12px; border-left: 4px solid var(--warn); background: #fff7ed; color: #6f4205; }
+@media (max-width: 820px) {
+  main { padding: 14px 12px 36px; }
+  .stage { grid-template-columns: 1fr; }
+  h1 { font-size: 25px; }
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>矩阵乘到并行推理演示</h1>
+<p>课堂位置：第二讲 P30-P31。目标是从一格输出的行列相乘，过渡到很多格可以并行算，再过渡到推理硬件。</p>
+</header>
+<section class="stage">
+<div class="canvas-wrap">
+<canvas id="scene" width="900" height="560" aria-label="矩阵乘并行演示画布"></canvas>
+<div class="controls">
+<button type="button" data-step="0" aria-pressed="true">1. 一个输出格：行乘列再累加</button>
+<button type="button" data-step="1" aria-pressed="false">2. 很多输出格：可以同时算</button>
+<button type="button" data-step="2" aria-pressed="false">3. 推理硬件：搬数据、排阵列、吐结果</button>
+</div>
+</div>
+<aside class="side">
+<h2 id="step-title">一个输出格</h2>
+<div id="readout"></div>
+<div class="note">边界：这是矩阵乘并行直觉演示，不是真实芯片微架构、缓存层级或调度时序。</div>
+</aside>
+</section>
+</main>
+<script>
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const buttons = [...document.querySelectorAll("button[data-step]")];
+const title = document.getElementById("step-title");
+const readout = document.getElementById("readout");
+let step = 0;
+
+const copy = [
+  ["一个输出格", "先只看 C 的一个格子：A 的一行和 B 的一列逐项相乘，再相加。"],
+  ["很多输出格", "C 的不同格子有相似计算，可以拆给很多计算单元同时做。"],
+  ["推理硬件", "芯片不是在理解语义，它是在高效搬运参数和激活值，并执行大量矩阵计算。"],
+];
+
+function cell(x, y, value, fill = "#ffffff", stroke = "#d9dfeb") {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+  ctx.fillRect(x, y, 42, 42);
+  ctx.strokeRect(x, y, 42, 42);
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 18px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(value, x + 21, y + 22);
+}
+
+function matrix(label, x, y, values, highlightRow = -1, highlightCol = -1, color = "#155bd5") {
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(label, x, y - 18);
+  values.forEach((row, r) => {
+    row.forEach((value, c) => {
+      const active = r === highlightRow || c === highlightCol;
+      cell(x + c * 42, y + r * 42, value, active ? `${color}22` : "#ffffff", active ? color : "#d9dfeb");
+    });
+  });
+}
+
+function arrow(x1, y1, x2, y2, color = "#5b657a") {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - 12 * Math.cos(angle - 0.5), y2 - 12 * Math.sin(angle - 0.5));
+  ctx.lineTo(x2 - 12 * Math.cos(angle + 0.5), y2 - 12 * Math.sin(angle + 0.5));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHardware() {
+  const x = 590;
+  const y = 108;
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("加速器阵列", x, y - 22);
+  ctx.fillStyle = "#eef5ff";
+  ctx.strokeStyle = "#155bd5";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(x, y, 220, 270);
+  for (let r = 0; r < 5; r += 1) {
+    for (let c = 0; c < 4; c += 1) {
+      ctx.fillStyle = (r + c) % 2 === 0 ? "#155bd5" : "#0f766e";
+      ctx.globalAlpha = 0.78;
+      ctx.fillRect(x + 28 + c * 42, y + 30 + r * 42, 28, 28);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.fillStyle = "#5b657a";
+  ctx.font = "17px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("参数 / 激活值", x - 4, y + 314);
+  arrow(x - 86, y + 135, x - 8, y + 135, "#155bd5");
+  arrow(x + 190, y + 135, x + 222, y + 135, "#0f766e");
+  ctx.fillText("输出", x + 190, y + 174);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  matrix("A", 70, 110, [[1, 2, 3], [4, 5, 6], [7, 8, 9]], step >= 0 ? 1 : -1, -1, "#155bd5");
+  matrix("B", 250, 110, [[1, 0, 2], [0, 1, 1], [2, 1, 0]], -1, step >= 0 ? 2 : -1, "#0f766e");
+  ctx.fillStyle = "#5b657a";
+  ctx.font = "700 30px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("x", 210, 178);
+  ctx.fillText("=", 412, 178);
+  const cValues = [["", "", "8"], ["", "", "13"], ["", "", "18"]];
+  if (step >= 1) {
+    cValues[0][0] = "7"; cValues[0][1] = "5";
+    cValues[1][0] = "16"; cValues[1][1] = "11";
+    cValues[2][0] = "25"; cValues[2][1] = "17";
+  }
+  matrix("C", 455, 110, cValues, -1, step === 0 ? 2 : -1, step >= 1 ? "#155bd5" : "#0f766e");
+  if (step === 0) {
+    ctx.fillStyle = "#172033";
+    ctx.font = "20px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("C[2,3] = 4x2 + 5x1 + 6x0 = 13", 72, 320);
+  }
+  if (step >= 1) {
+    ctx.fillStyle = "#172033";
+    ctx.font = "20px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("每个输出格都是类似的小任务，可以拆开并行。", 72, 320);
+    for (let i = 0; i < 6; i += 1) {
+      arrow(120 + i * 58, 365, 150 + i * 58, 410, i % 2 ? "#0f766e" : "#155bd5");
+    }
+  }
+  if (step >= 2) drawHardware();
+}
+
+function renderSide() {
+  title.textContent = copy[step][0];
+  readout.innerHTML = `<div class="box"><strong>讲法</strong><br>${copy[step][1]}</div>`;
+}
+
+buttons.forEach((button) => {
+  button.addEventListener("click", () => {
+    step = Number(button.dataset.step);
+    buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+    draw();
+    renderSide();
+  });
+});
+
+draw();
+renderSide();
+</script>
+</body>
+</html>

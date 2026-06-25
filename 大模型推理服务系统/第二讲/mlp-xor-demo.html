@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XOR 多层感知器演示</title>
+<style>
+:root {
+  --ink: #172033;
+  --muted: #5b657a;
+  --line: #d9dfeb;
+  --paper: #ffffff;
+  --soft: #f5f7fb;
+  --accent: #155bd5;
+  --teal: #0f766e;
+  --warn: #a45f05;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--soft);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 44px; }
+header { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 30px; line-height: 1.2; letter-spacing: 0; }
+p { margin: 8px 0 0; color: var(--muted); }
+.stage {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 330px;
+  gap: 16px;
+  align-items: stretch;
+}
+.canvas-wrap,
+.side {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+canvas { display: block; width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; }
+.controls { display: grid; gap: 8px; margin-top: 12px; }
+button {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { border-color: var(--accent); background: #eef5ff; color: var(--accent); font-weight: 700; }
+.side h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: 0; }
+.readout { display: grid; gap: 10px; margin-top: 12px; }
+.box { border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #f8fafc; }
+.box strong { color: var(--teal); }
+.note { margin-top: 14px; padding: 12px; border-left: 4px solid var(--warn); background: #fff7ed; color: #6f4205; }
+@media (max-width: 820px) {
+  main { padding: 14px 12px 36px; }
+  .stage { grid-template-columns: 1fr; }
+  h1 { font-size: 25px; }
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>XOR 多层感知器演示</h1>
+<p>课堂位置：第二讲 P03-P06。目标是让学生看见：一条线切不开 XOR，但两层可以把简单判断组合起来。</p>
+</header>
+<section class="stage">
+<div class="canvas-wrap">
+<canvas id="scene" width="900" height="560" aria-label="XOR 多层感知器画布"></canvas>
+<div class="controls" aria-label="演示步骤">
+<button type="button" data-step="0" aria-pressed="true">1. 只看 XOR 四个点</button>
+<button type="button" data-step="1" aria-pressed="false">2. 第一层：两条隐藏判断线</button>
+<button type="button" data-step="2" aria-pressed="false">3. 隐藏层：把区域变成中间特征</button>
+<button type="button" data-step="3" aria-pressed="false">4. 输出层：组合中间判断</button>
+</div>
+</div>
+<aside class="side">
+<h2 id="step-title">只看 XOR 四个点</h2>
+<div class="readout" id="readout"></div>
+<div class="note">边界：这是结构表达能力的教学演示，不是真实训练过程，也不是真实硬件时序模拟。</div>
+</aside>
+</section>
+</main>
+<script>
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const buttons = [...document.querySelectorAll("button[data-step]")];
+const title = document.getElementById("step-title");
+const readout = document.getElementById("readout");
+let step = 0;
+
+const points = [
+  { x: 0, y: 0, label: "0", color: "#155bd5" },
+  { x: 1, y: 1, label: "0", color: "#155bd5" },
+  { x: 0, y: 1, label: "1", color: "#0f766e" },
+  { x: 1, y: 0, label: "1", color: "#0f766e" },
+];
+
+const copy = [
+  {
+    title: "只看 XOR 四个点",
+    lines: [
+      ["讲法", "先让学生观察：同类点在对角线上。"],
+      ["关键", "一条直线无论怎么摆，都不能把 1 和 0 完全分开。"],
+    ],
+  },
+  {
+    title: "第一层：两条隐藏判断线",
+    lines: [
+      ["讲法", "隐藏神经元不是神秘部件，可以先理解成两个简单判断。"],
+      ["例子", "一条线看 x+y 是否足够大，另一条线看 x+y 是否过大。"],
+    ],
+  },
+  {
+    title: "隐藏层：把区域变成中间特征",
+    lines: [
+      ["讲法", "第一层先把平面切出一个中间区域。"],
+      ["关键", "中间特征不是最后答案，但它让下一层更容易组合。"],
+    ],
+  },
+  {
+    title: "输出层：组合中间判断",
+    lines: [
+      ["讲法", "输出层把两个中间判断合成最终 XOR。"],
+      ["边界", "这里讲的是表达能力直觉，不是在手推真实训练得到的权重。"],
+    ],
+  },
+];
+
+function sx(x) { return 210 + x * 300; }
+function sy(y) { return 380 - y * 260; }
+
+function lineThrough(fn, color, label, offset) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  for (let px = -0.2; px <= 1.25; px += 0.01) {
+    const py = fn(px);
+    const cx = sx(px);
+    const cy = sy(py);
+    if (px === -0.2) ctx.moveTo(cx, cy);
+    else ctx.lineTo(cx, cy);
+  }
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.font = "700 24px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText(label, 540, 130 + offset);
+  ctx.restore();
+}
+
+function drawNetwork() {
+  const layers = [
+    [{ x: 670, y: 190 }, { x: 670, y: 310 }],
+    [{ x: 770, y: 250 }],
+  ];
+  ctx.save();
+  ctx.strokeStyle = "#d9dfeb";
+  ctx.lineWidth = 3;
+  for (const h of layers[0]) {
+    ctx.beginPath();
+    ctx.moveTo(610, 250);
+    ctx.lineTo(h.x, h.y);
+    ctx.lineTo(layers[1][0].x, layers[1][0].y);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#eef5ff";
+  ctx.strokeStyle = "#155bd5";
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(610, 250, 24, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#f2fbf8";
+  ctx.strokeStyle = "#0f766e";
+  for (const h of layers[0]) {
+    ctx.beginPath(); ctx.arc(h.x, h.y, 24, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  ctx.fillStyle = "#eef5ff";
+  ctx.strokeStyle = "#155bd5";
+  ctx.beginPath(); ctx.arc(770, 250, 24, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 18px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("输入", 590, 304);
+  ctx.fillText("隐藏层", 640, 370);
+  ctx.fillText("输出", 750, 304);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#d9dfeb";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(150, 80, 430, 360);
+  ctx.fillStyle = "#5b657a";
+  ctx.font = "18px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("x1", 560, 430);
+  ctx.fillText("x2", 160, 98);
+  ctx.strokeStyle = "#172033";
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(150, 380); ctx.lineTo(580, 380); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(210, 440); ctx.lineTo(210, 80); ctx.stroke();
+  ctx.fillText("0", sx(0) - 5, sy(0) + 34);
+  ctx.fillText("1", sx(1) - 5, sy(0) + 34);
+  ctx.fillText("1", sx(0) - 34, sy(1) + 6);
+
+  if (step >= 1) {
+    lineThrough((x) => 0.45 - x, "#155bd5", "h1: x1+x2 > 0.5", 0);
+    lineThrough((x) => 1.45 - x, "#0f766e", "h2: x1+x2 > 1.5", 34);
+  }
+
+  if (step >= 2) {
+    ctx.save();
+    ctx.fillStyle = "rgba(15, 118, 110, 0.10)";
+    ctx.beginPath();
+    ctx.moveTo(sx(-0.1), sy(0.55));
+    ctx.lineTo(sx(0.55), sy(-0.1));
+    ctx.lineTo(sx(1.15), sy(0.5));
+    ctx.lineTo(sx(0.5), sy(1.15));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  for (const p of points) {
+    ctx.save();
+    ctx.fillStyle = p.color;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(sx(p.x), sy(p.y), 24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(p.label, sx(p.x), sy(p.y));
+    ctx.restore();
+  }
+
+  if (step >= 3) drawNetwork();
+}
+
+function renderSide() {
+  title.textContent = copy[step].title;
+  readout.innerHTML = copy[step].lines
+    .map(([label, body]) => `<div class="box"><strong>${label}</strong><br>${body}</div>`)
+    .join("");
+}
+
+buttons.forEach((button) => {
+  button.addEventListener("click", () => {
+    step = Number(button.dataset.step);
+    buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+    draw();
+    renderSide();
+  });
+});
+
+draw();
+renderSide();
+</script>
+</body>
+</html>

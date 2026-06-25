@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大模型推理服务系统 · 课程总览</title>
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body>
+<main class="page">
+<nav class="topbar"><a href="../index.html">summer camp 课程总览</a><span>infiniTensor summer camp 2026</span></nav>
+<header class="hero">
+<p class="eyebrow">Course Overview</p>
+<h1>大模型推理服务系统</h1>
+<p>这门课由原“AI 模型导论与推理基础原理”拆成两讲。发布包给导师和后续协作者使用：每讲保留 PPT、逐页 HTML 大纲和 slide 预览图，方便对照讲法、设计意图和课堂边界。</p>
+</header>
+<section class="summary-grid">
+<div class="summary-box"><strong>课程数量</strong><p>2 讲基础课</p></div>
+<div class="summary-box"><strong>PPT 页数</strong><p>62 页，分别为 30 / 32</p></div>
+<div class="summary-box"><strong>生成方式</strong><p>复用 Presentation3 的视觉背景；在关键页使用 imagegen 教学配图，并配套 HTML 演示。</p></div>
+</section>
+<section>
+<h2>课程文件</h2>
+<div class="lesson-list">
+<a class="lesson-link" href="第一讲/outline.html"><strong>第一讲 · 从智能到感知器</strong><span>30 slides · outline.html + slides.pptx</span></a>
+<a class="lesson-link" href="第二讲/outline.html"><strong>第二讲 · 从多层感知器到训练与推理</strong><span>32 slides · outline.html + slides.pptx</span></a>
+</div>
+</section>
+<section>
+<h2>总故事线</h2>
+<ol>
+<li>第一讲：用“什么算智能”开场，先让学生承认输入输出系统之间有差别。；把所有例子压到 IPO 和 f(x)=y，建立后面讲模型的共同骨架。；再用符号主义、专家系统、样本、特征、标签说明 AI 如何从规则走到数据。；最后用感知器和 XOR 收束，留下第二讲为什么需要多层的悬念。</li>
+<li>第二讲：从第一讲的 XOR 悬念接起，说明一条线不够时为什么要组合中间判断。；用多层感知器、one-hot、MNIST 和概率输出把模型表达能力讲出来。；再把训练拆成训练集/测试集、拟合/过拟合、损失、梯度下降和激活函数。；最后连接贪吃蛇、AlphaGo、CNN/RNN/Transformer、矩阵乘和智能芯片，落到推理系统。</li>
+</ol>
+</section>
+<section>
+<h2>来源和边界</h2>
+<div class="source-note-box">
+<p>主来源是两份课程文档 DOCX；原 PDF 共 32 页，用来核对拆分方向；原 MP4 为 291MB 视频源，不放入 GitHub 发布包。</p>
+<p>黏菌、蚁群、AlphaGo 训练阶段、智能芯片规模等内容在讲授时按教学直觉处理，不写成无条件技术定理；需要严格引用时应另补官方或论文来源。</p>
+<p>第二讲附带 3 个课堂 HTML 演示，用来解释 XOR 多层组合、MNIST 像素展开、矩阵乘并行直觉；这些演示不是严格训练过程或硬件时序模拟。</p>
+</div>
+</section>
+</main>
+</body>
+</html>

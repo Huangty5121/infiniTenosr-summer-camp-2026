@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第二讲：从多层感知器到训练与推理</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="page">
+<nav class="topbar"><a href="../index.html">课程总览</a><span>大模型推理服务系统</span></nav>
+<header class="hero">
+<p class="eyebrow">第二讲 · 40-45 分钟</p>
+<h1>从多层感知器到训练与推理</h1>
+<p>模型如何变复杂、如何训练、如何运行</p>
+<p>文件入口：<a href="slides.pptx">slides.pptx</a>；本页为逐页 HTML 讲课大纲。</p>
+</header>
+<section>
+<h2>这一讲为什么这样拆</h2>
+<p>第二讲的简化目标是把“模型为什么复杂”和“推理为什么吃硬件”连起来。它不展开严格优化推导，也不把强化学习讲成完整算法课，而是只保留学生后面理解推理系统所需的骨架：多层产生中间表示，训练调整参数，推理固定参数做大量矩阵计算，硬件负责把这些计算高效执行。</p>
+</section>
+<section>
+<h2>PPT 故事线</h2>
+<ol>
+<li>从第一讲的 XOR 悬念接起，说明一条线不够时为什么要组合中间判断。</li>
+<li>用多层感知器、one-hot、MNIST 和概率输出把模型表达能力讲出来。</li>
+<li>再把训练拆成训练集/测试集、拟合/过拟合、损失、梯度下降和激活函数。</li>
+<li>最后连接贪吃蛇、AlphaGo、CNN/RNN/Transformer、矩阵乘和智能芯片，落到推理系统。</li>
+</ol>
+</section>
+<section><h2>本讲必须固定的说法</h2><ul><li>多层不是更神秘，而是能制造和组合中间判断。</li>
+<li>隐藏层不是意识，是中间表示。</li>
+<li>模型复杂度越高，表达能力越强，但越需要防止过拟合。</li>
+<li>损失函数是“错误程度”的尺子，梯度下降是把参数往少错的方向调。</li>
+<li>贪吃蛇和 AlphaGo 更接近强化学习：学习信号来自奖励和长期结果，不是每一步都有标准答案。</li>
+<li>训练是调参数，推理是用固定参数做计算。</li>
+<li>大模型推理最终要落到矩阵乘、内存和并行硬件。</li></ul></section>
+<section><h2>课后小练习</h2><ul><li>画出 XOR 四个点，并解释为什么一条线切不开。</li>
+<li>用自己的话解释“第一层 for what、第二层 for what”。</li>
+<li>解释拟合、泛化、过拟合三者区别。</li>
+<li>设计一个贪吃蛇奖励函数：吃到食物、撞墙、靠近食物、原地绕圈分别给什么奖励或惩罚？</li>
+<li>用一句话解释：训练和推理有什么区别。</li></ul></section>
+
+<section>
+<h2>课堂互动演示</h2>
+<div class="addon-grid">
+<article class="addon-card">
+<h3><a href="mlp-xor-demo.html">XOR 多层感知器演示</a></h3>
+<p><strong>什么时候打开：</strong>P03-P06，尤其 P04 讲多层直觉、P06 讲两个隐藏判断组合时打开。</p>
+<p><strong>学生应该看到：</strong>依次点击步骤，先看 XOR 四个点，再看两条隐藏层判断线，最后看输出层如何把中间判断组合成 XOR。</p>
+<p><strong>边界：</strong>这是结构表达能力的教学演示，不是真实训练过程，也不是真实硬件时序模拟。</p>
+</article><article class="addon-card">
+<h3><a href="mnist-vector-demo.html">MNIST 像素展开演示</a></h3>
+<p><strong>什么时候打开：</strong>P11 讲图像识别时打开。</p>
+<p><strong>学生应该看到：</strong>点击展开，看到一张手写数字先变成像素网格，再拉平成输入向量，最后进入 10 类输出分数。</p>
+<p><strong>边界：</strong>这里演示的是数据表示路径，不代表真实 MNIST 模型只有这几个像素或这几层。</p>
+</article><article class="addon-card">
+<h3><a href="matrix-parallel-demo.html">矩阵乘到并行推理演示</a></h3>
+<p><strong>什么时候打开：</strong>P30-P31，讲推理核心计算和为什么需要智能芯片时打开。</p>
+<p><strong>学生应该看到：</strong>点击下一步，观察行列相乘、多个输出格并行计算，以及计算流向加速器阵列。</p>
+<p><strong>边界：</strong>这是矩阵乘并行直觉演示，不是真实芯片微架构、缓存层级或调度时序。</p>
+</article>
+</div>
+</section>
+
+<section>
+<h2>逐页目录</h2>
+<ol class="toc">
+<li><a href="#slide-01">P01 · 封面</a></li>
+<li><a href="#slide-02">P02 · 第一讲复盘</a></li>
+<li><a href="#slide-03">P03 · XOR 问题复盘</a></li>
+<li><a href="#slide-04">P04 · 多层直觉：多条线组合</a></li>
+<li><a href="#slide-05">P05 · 第一层和第二层 for what</a></li>
+<li><a href="#slide-06">P06 · XOR 的多层解决</a></li>
+<li><a href="#slide-07">P07 · 隐藏层不是魔法</a></li>
+<li><a href="#slide-08">P08 · 神经元和层数增加会怎样</a></li>
+<li><a href="#slide-09">P09 · 模型复杂度：能力和风险</a></li>
+<li><a href="#slide-10">P10 · 从二分类到多分类：one-hot</a></li>
+<li><a href="#slide-11">P11 · MNIST 图像识别</a></li>
+<li><a href="#slide-12">P12 · 概率输出与 argmax</a></li>
+<li><a href="#slide-13">P13 · 训练集和测试集</a></li>
+<li><a href="#slide-14">P14 · 拟合与欠拟合</a></li>
+<li><a href="#slide-15">P15 · 过拟合</a></li>
+<li><a href="#slide-16">P16 · 损失函数：错得多不多</a></li>
+<li><a href="#slide-17">P17 · 回归例子：考试成绩预测</a></li>
+<li><a href="#slide-18">P18 · 分类例子：数字识别损失</a></li>
+<li><a href="#slide-19">P19 · 训练：调整参数降低损失</a></li>
+<li><a href="#slide-20">P20 · 梯度下降：旋钮和下山</a></li>
+<li><a href="#slide-21">P21 · 为什么 sgn 不适合训练</a></li>
+<li><a href="#slide-22">P22 · 常见激活函数</a></li>
+<li><a href="#slide-23">P23 · 贪吃蛇：状态、动作、奖励</a></li>
+<li><a href="#slide-24">P24 · 贪吃蛇里的训练信号</a></li>
+<li><a href="#slide-25">P25 · AlphaGo：策略和价值</a></li>
+<li><a href="#slide-26">P26 · AlphaGo 的损失/目标直觉</a></li>
+<li><a href="#slide-27">P27 · 特殊结构：CNN/RNN/Transformer</a></li>
+<li><a href="#slide-28">P28 · 深层网络问题：残差与归一化</a></li>
+<li><a href="#slide-29">P29 · 训练和推理的区别</a></li>
+<li><a href="#slide-30">P30 · 核心计算：矩阵乘</a></li>
+<li><a href="#slide-31">P31 · 为什么需要智能芯片</a></li>
+<li><a href="#slide-32">P32 · 总结：会输出不等于理解</a></li>
+</ol>
+</section>
+<section>
+<h2>逐页讲课大纲</h2>
+<article class="slide-card" id="slide-01">
+<figure class="slide-preview">
+<img src="slide-previews/slide_01.png" alt="第二讲 slide 1 preview">
+<figcaption>P01 · 封面</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 16-31 页拆分</div>
+<h3>P01 · 封面</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：建立第二讲主题。 页面上建议这样放：标题：从多层感知器到训练与推理。副标题：模型如何变复杂、如何训练、如何运行。</p>
+<p>讲的时候可以这样展开：上一讲我们停在 XOR：一条线切不开。今天从这个问题出发，看神经网络为什么要多层，以及参数如何被训练出来。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-02">
+<figure class="slide-preview">
+<img src="slide-previews/slide_02.png" alt="第二讲 slide 2 preview">
+<figcaption>P02 · 第一讲复盘</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P02 · 第一讲复盘</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：确保学生回到同一条线上。 页面上建议这样放：关键词：输入、特征、标签、权重、偏置、感知器、决策边界。</p>
+<p>讲的时候可以这样展开：如果这些词有任何一个不清楚，后面都会断。先用 2 分钟快速复盘。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-03">
+<figure class="slide-preview">
+<img src="slide-previews/slide_03.png" alt="第二讲 slide 3 preview">
+<figcaption>P03 · XOR 问题复盘</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 15 页</div>
+<h3>P03 · XOR 问题复盘</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：重新激活悬念。 页面上建议这样放：画 XOR 四个点。标注：一条直线无法分开。</p>
+<p>讲的时候可以这样展开：这个问题很小，但很重要。它说明单层感知器不是万能的，模型结构决定了它能表达什么。</p>
+<p>如果要带一点互动，可以这样问：问：如果一条线不够，两条线行不行？</p>
+<p>配套演示：可以打开 <code>mlp-xor-demo.html</code>。P03 先让学生承认一条线切不开；P04/P05 再点击隐藏层判断；P06 最后点击输出层组合，让他们看到“多层”不是口号，而是把中间判断重新组合。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-04">
+<figure class="slide-preview">
+<img src="slide-previews/slide_04.png" alt="第二讲 slide 4 preview">
+<figcaption>P04 · 多层直觉：多条线组合</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 16 页</div>
+<h3>P04 · 多层直觉：多条线组合</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：用几何直觉解释多层。 页面上建议这样放：第一层画两条线 L1、L2；第二层看点是否同时满足几个条件。</p>
+<p>讲的时候可以这样展开：第一层负责提出中间判断，例如“在 L1 上方吗”“在 L2 下方吗”。第二层负责把这些判断组合成最终分类。</p>
+<p>配套演示：可以打开 <code>mlp-xor-demo.html</code>。P03 先让学生承认一条线切不开；P04/P05 再点击隐藏层判断；P06 最后点击输出层组合，让他们看到“多层”不是口号，而是把中间判断重新组合。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-05">
+<figure class="slide-preview">
+<img src="slide-previews/slide_05.png" alt="第二讲 slide 5 preview">
+<figcaption>P05 · 第一层和第二层 for what</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 16-17 页扩展</div>
+<h3>P05 · 第一层和第二层 for what</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：把“多一层到底多了什么”讲清楚。 页面上建议这样放：页面分两栏：第一层 = 制造中间特征/中间边界；第二层 = 组合中间判断形成最终判断。</p>
+<p>讲的时候可以这样展开：第一层不一定给最终答案，它把原始输入变成更有用的中间判断。第二层看到的是 h1、h2，而不是原始 x0、x1。</p>
+<p>这里可以补一句背景：特征变换、中间表示。</p>
+<p>配套演示：可以打开 <code>mlp-xor-demo.html</code>。P03 先让学生承认一条线切不开；P04/P05 再点击隐藏层判断；P06 最后点击输出层组合，让他们看到“多层”不是口号，而是把中间判断重新组合。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-06">
+<figure class="slide-preview">
+<img src="slide-previews/slide_06.png" alt="第二讲 slide 6 preview">
+<figcaption>P06 · XOR 的多层解决</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 16 页</div>
+<h3>P06 · XOR 的多层解决</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：具体讲清多层如何解决 XOR。 页面上建议这样放：用图显示两个隐藏神经元产生两个判断，输出神经元组合。</p>
+<p>讲的时候可以这样展开：一条线解决不了，但多个中间判断组合后，可以把空间切成更复杂的区域。</p>
+<p>配套演示：可以打开 <code>mlp-xor-demo.html</code>。P03 先让学生承认一条线切不开；P04/P05 再点击隐藏层判断；P06 最后点击输出层组合，让他们看到“多层”不是口号，而是把中间判断重新组合。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-07">
+<figure class="slide-preview">
+<img src="slide-previews/slide_07.png" alt="第二讲 slide 7 preview">
+<figcaption>P07 · 隐藏层不是魔法</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 17-18 页</div>
+<h3>P07 · 隐藏层不是魔法</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：去神秘化。 页面上建议这样放：一句话：隐藏层是中间表示，不是神秘意识。</p>
+<p>讲的时候可以这样展开：隐藏层之所以叫隐藏，是因为训练数据只给输入和输出，中间这些 h1、h2 没有人直接标答案，它们由训练自动形成。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-08">
+<figure class="slide-preview">
+<img src="slide-previews/slide_08.png" alt="第二讲 slide 8 preview">
+<figcaption>P08 · 神经元和层数增加会怎样</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 18-19 页</div>
+<h3>P08 · 神经元和层数增加会怎样</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释宽度和深度。 页面上建议这样放：宽度：神经元越多，能制造越多边界；深度：层数越多，能分阶段组合特征。</p>
+<p>讲的时候可以这样展开：模型不是堆得越深越神秘，而是表达能力变强，可以把复杂判断拆成多步中间判断。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-09">
+<figure class="slide-preview">
+<img src="slide-previews/slide_09.png" alt="第二讲 slide 9 preview">
+<figcaption>P09 · 模型复杂度：能力和风险</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P09 · 模型复杂度：能力和风险</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：为过拟合埋伏笔。 页面上建议这样放：横轴模型复杂度，纵轴训练表现/测试表现。</p>
+<p>讲的时候可以这样展开：模型太简单会学不到，太复杂可能把训练数据记死。能力提升和可靠性不是一回事。</p>
+<p>这里可以补一句背景：模型容量、泛化。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-10">
+<figure class="slide-preview">
+<img src="slide-previews/slide_10.png" alt="第二讲 slide 10 preview">
+<figcaption>P10 · 从二分类到多分类：one-hot</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 20 页</div>
+<h3>P10 · 从二分类到多分类：one-hot</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：扩展输出类型并讲标签编码。 页面上建议这样放：二分类：苹果/非苹果。多分类：数字 0-9。one-hot：10 个位置只有一个是 1。</p>
+<p>讲的时候可以这样展开：one-hot 就像答题卡，只有正确类别那个格子被标成 1。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-11">
+<figure class="slide-preview">
+<img src="slide-previews/slide_11.png" alt="第二讲 slide 11 preview">
+<figcaption>P11 · MNIST 图像识别</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 23 页</div>
+<h3>P11 · MNIST 图像识别</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：用经典例子连接神经网络。 页面上建议这样放：每张图是 28×28 矩阵；展开为 784 个输入；输出 10 个类别分数/概率。</p>
+<p>讲的时候可以这样展开：这页是从感知器到神经网络最好的例子：输入是像素，输出是数字类别。</p>
+<p>配套演示：可以打开 <code>mnist-vector-demo.html</code>。这一页重点不是讲 MNIST 训练细节，而是让学生看见图片如何先变成像素数字，再作为模型输入，最后变成类别分数。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-12">
+<figure class="slide-preview">
+<img src="slide-previews/slide_12.png" alt="第二讲 slide 12 preview">
+<figcaption>P12 · 概率输出与 argmax</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 23、25 页</div>
+<h3>P12 · 概率输出与 argmax</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释模型输出不是绝对真理。 页面上建议这样放：概率向量 → argmax → 类别。例：数字 3 的概率最高，则输出 3。</p>
+<p>讲的时候可以这样展开：模型很多时候不是直接给真理，而是给每个类别一个分数或概率。argmax 就是选择最大值的位置。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-13">
+<figure class="slide-preview">
+<img src="slide-previews/slide_13.png" alt="第二讲 slide 13 preview">
+<figcaption>P13 · 训练集和测试集</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P13 · 训练集和测试集</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：补统计学基础。 页面上建议这样放：画两堆数据：训练集用于学习，测试集用于考试。</p>
+<p>讲的时候可以这样展开：不能用同一套题又训练又考试。训练集准不代表模型真的会，测试集表现才更接近泛化能力。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-14">
+<figure class="slide-preview">
+<img src="slide-previews/slide_14.png" alt="第二讲 slide 14 preview">
+<figcaption>P14 · 拟合与欠拟合</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 24 页扩展</div>
+<h3>P14 · 拟合与欠拟合</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释模型学习规律和模型太简单。 页面上建议这样放：例子：学习时间和考试分数。趋势线表示拟合；水平线表示欠拟合。</p>
+<p>讲的时候可以这样展开：拟合就是模型试图贴近数据规律。欠拟合就是模型太简单，连基本趋势都学不到。</p>
+<p>这里可以补一句背景：拟合、欠拟合。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-15">
+<figure class="slide-preview">
+<img src="slide-previews/slide_15.png" alt="第二讲 slide 15 preview">
+<figcaption>P15 · 过拟合</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P15 · 过拟合</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释模型太复杂。 页面上建议这样放：图：曲线穿过每个训练点，但新点预测很差。</p>
+<p>讲的时候可以这样展开：过拟合就是模型把训练数据的偶然细节也记住了。训练集很好，新数据不一定好。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-16">
+<figure class="slide-preview">
+<img src="slide-previews/slide_16.png" alt="第二讲 slide 16 preview">
+<figcaption>P16 · 损失函数：错得多不多</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 24 页</div>
+<h3>P16 · 损失函数：错得多不多</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：讲训练核心。 页面上建议这样放：定义：损失函数衡量预测和真实答案之间的差距。</p>
+<p>讲的时候可以这样展开：模型输出后，我们要有一把尺子判断它错得多严重。这把尺子就是损失函数。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-17">
+<figure class="slide-preview">
+<img src="slide-previews/slide_17.png" alt="第二讲 slide 17 preview">
+<figcaption>P17 · 回归例子：考试成绩预测</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P17 · 回归例子：考试成绩预测</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：用简单数值例子讲损失。 页面上建议这样放：真实 80，预测 75，误差 5；真实 80，预测 40，误差 40。</p>
+<p>讲的时候可以这样展开：误差越大，损失越大。这里不必展开 MSE 公式，只让学生明白损失是可计算的错误程度。</p>
+<p>这里可以补一句背景：误差、回归、损失。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-18">
+<figure class="slide-preview">
+<img src="slide-previews/slide_18.png" alt="第二讲 slide 18 preview">
+<figcaption>P18 · 分类例子：数字识别损失</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 23-25 页扩展</div>
+<h3>P18 · 分类例子：数字识别损失</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：讲分类也有损失。 页面上建议这样放：正确答案是 3；模型给 3 的概率很低、给 8 的概率很高，则损失大。</p>
+<p>讲的时候可以这样展开：分类任务中，不是只看最后猜没猜对，还要看模型给正确类别的信心。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-19">
+<figure class="slide-preview">
+<img src="slide-previews/slide_19.png" alt="第二讲 slide 19 preview">
+<figcaption>P19 · 训练：调整参数降低损失</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 24 页</div>
+<h3>P19 · 训练：调整参数降低损失</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：连接参数更新。 页面上建议这样放：图：参数 → 预测 → 损失 → 更新参数 → 再预测。</p>
+<p>讲的时候可以这样展开：训练就是不断调整权重和偏置，让损失下降。模型不是一次就会，而是在很多样本上反复修正。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-20">
+<figure class="slide-preview">
+<img src="slide-previews/slide_20.png" alt="第二讲 slide 20 preview">
+<figcaption>P20 · 梯度下降：旋钮和下山</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 24 页扩展</div>
+<h3>P20 · 梯度下降：旋钮和下山</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：用直觉讲优化。 页面上建议这样放：图：损失像山谷；参数像位置；梯度指方向。</p>
+<p>讲的时候可以这样展开：参数像一堆旋钮。梯度告诉我们每个旋钮往哪个方向拧，损失会小一点。学习率决定每次拧多少。</p>
+<p>这里可以补一句背景：梯度、学习率、优化。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-21">
+<figure class="slide-preview">
+<img src="slide-previews/slide_21.png" alt="第二讲 slide 21 preview">
+<figcaption>P21 · 为什么 sgn 不适合训练</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 25 页</div>
+<h3>P21 · 为什么 sgn 不适合训练</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释可导的重要性。 页面上建议这样放：sgn 阶跃图；旁边写：大部分地方导数为 0。</p>
+<p>讲的时候可以这样展开：硬阈值很适合理解分类，但不适合训练。梯度下降需要知道参数变一点，损失会怎么变；sgn 很难提供这个信息。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-22">
+<figure class="slide-preview">
+<img src="slide-previews/slide_22.png" alt="第二讲 slide 22 preview">
+<figcaption>P22 · 常见激活函数</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 25 页</div>
+<h3>P22 · 常见激活函数</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：自然过渡到 ReLU/sigmoid。 页面上建议这样放：展示 ReLU、sigmoid 的简化图。</p>
+<p>讲的时候可以这样展开：现实神经网络常用更适合训练的激活函数。这里不用记公式，只记住：激活函数让网络具有非线性，也让训练更可行。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-23">
+<figure class="slide-preview">
+<img src="slide-previews/slide_23.png" alt="第二讲 slide 23 preview">
+<figcaption>P23 · 贪吃蛇：状态、动作、奖励</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P23 · 贪吃蛇：状态、动作、奖励</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：引入强化学习，保持趣味。 页面上建议这样放：画贪吃蛇：状态 = 蛇位置/食物/墙；动作 = 上下左右；奖励 = 吃到食物加分，撞墙扣分。</p>
+<p>讲的时候可以这样展开：图像分类有标准答案，贪吃蛇每一步未必有唯一标准答案。它关心的是长期结果：最后能不能活得久、吃得多。</p>
+<p>如果要带一点互动，可以这样问：问：向上走这一步好不好？只看当前一步够不够？</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-24">
+<figure class="slide-preview">
+<img src="slide-previews/slide_24.png" alt="第二讲 slide 24 preview">
+<figcaption>P24 · 贪吃蛇里的训练信号</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P24 · 贪吃蛇里的训练信号</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：区分损失与奖励。 页面上建议这样放：监督学习：预测 vs 标准答案。强化学习：动作 → 奖励 → 长期回报。</p>
+<p>讲的时候可以这样展开：贪吃蛇不是每一步都有老师告诉它正确答案。它通过奖励学习：吃到食物是好信号，撞墙是坏信号。很多算法会把预测回报和实际回报之间的差距变成损失来训练。</p>
+<p>这里可以补一句背景：强化学习、奖励、回报、TD error 只作直觉，不推公式。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-25">
+<figure class="slide-preview">
+<img src="slide-previews/slide_25.png" alt="第二讲 slide 25 preview">
+<figcaption>P25 · AlphaGo：策略和价值</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 4 页扩展</div>
+<h3>P25 · AlphaGo：策略和价值</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：把 AlphaGo 讲得更准确。 页面上建议这样放：两个概念：策略 = 下一步下哪里；价值 = 当前局面赢的概率。</p>
+<p>讲的时候可以这样展开：AlphaGo 不是简单背棋谱。它要评估局面、选择动作，并通过自我对弈改进。最终目标不是像人，而是提高赢棋概率。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-26">
+<figure class="slide-preview">
+<img src="slide-previews/slide_26.png" alt="第二讲 slide 26 preview">
+<figcaption>P26 · AlphaGo 的损失/目标直觉</figcaption>
+</figure>
+<div>
+<div class="slide-meta">新增页</div>
+<h3>P26 · AlphaGo 的损失/目标直觉</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：回应“损失算法”问题。 页面上建议这样放：页面分两栏：监督阶段：模仿高手棋谱；强化阶段：自我对弈，以胜负和局面价值改进。</p>
+<p>讲的时候可以这样展开：在监督学习阶段，可以用“预测下一步和高手下一步差多少”训练策略。在强化学习阶段，更关注动作是否提高长期胜率。这里的学习信号来自胜负和价值估计。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-27">
+<figure class="slide-preview">
+<img src="slide-previews/slide_27.png" alt="第二讲 slide 27 preview">
+<figcaption>P27 · 特殊结构：CNN/RNN/Transformer</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 26 页</div>
+<h3>P27 · 特殊结构：CNN/RNN/Transformer</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：连接深度网络结构。 页面上建议这样放：图像适合 CNN；序列适合 RNN/Transformer；结构帮助模型更少参数捕捉特征。</p>
+<p>讲的时候可以这样展开：结构不是装饰。它相当于把任务特点写进模型，让模型更容易学习。</p>
+<p>这里要收住说法：CNN、RNN、Transformer 的重点是给任务提供合适的归纳偏置或计算路径，不能简单说成所有结构都只是为了“更少参数”。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-28">
+<figure class="slide-preview">
+<img src="slide-previews/slide_28.png" alt="第二讲 slide 28 preview">
+<figcaption>P28 · 深层网络问题：残差与归一化</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 27-28 页</div>
+<h3>P28 · 深层网络问题：残差与归一化</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释为什么需要工程结构。 页面上建议这样放：问题：信息损失、数值不稳定。残差：给信息一条旁路。归一化：把数值拉回稳定范围。</p>
+<p>讲的时候可以这样展开：网络变深后，不是简单堆层就行。残差让前面层的信息可以继续传下去；归一化让每层数值不要越来越偏。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-29">
+<figure class="slide-preview">
+<img src="slide-previews/slide_29.png" alt="第二讲 slide 29 preview">
+<figcaption>P29 · 训练和推理的区别</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 29-30 页扩展</div>
+<h3>P29 · 训练和推理的区别</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：从训练转到推理。 页面上建议这样放：训练：调参数。推理：参数固定后，根据新输入算输出。</p>
+<p>讲的时候可以这样展开：模型训练好以后，推理阶段不会再学习，只是用已经学好的参数做计算。</p>
+<p>这一页要把训练和推理分开：训练是在改参数、看损失、再更新；推理是在参数固定后接收输入并输出结果。后面讲芯片时接的是推理这条线。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-30">
+<figure class="slide-preview">
+<img src="slide-previews/slide_30.png" alt="第二讲 slide 30 preview">
+<figcaption>P30 · 核心计算：矩阵乘</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 29 页</div>
+<h3>P30 · 核心计算：矩阵乘</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：解释硬件基础。 页面上建议这样放：Y = XW^T + b；很多神经元一起算就是矩阵乘。</p>
+<p>讲的时候可以这样展开：一个神经元是加权求和，很多神经元、很多样本一起算，就变成矩阵乘。大模型最耗时的计算很大一部分就在这里。</p>
+<p>配套演示：可以打开 <code>matrix-parallel-demo.html</code>。P30 用它看行列相乘和累加，P31 用它过渡到并行阵列、内存搬运和吞吐，而不是把智能芯片讲成“负责训练调参数”。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-31">
+<figure class="slide-preview">
+<img src="slide-previews/slide_31.png" alt="第二讲 slide 31 preview">
+<figcaption>P31 · 为什么需要智能芯片</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 30 页</div>
+<h3>P31 · 为什么需要智能芯片</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：连接到系统和硬件。 页面上建议这样放：参数千亿级；需要内存；需要并行算力；GPU/NPU/AI 芯片。</p>
+<p>讲的时候可以这样展开：模型不是云里的魔法。参数要存在内存里，推理要做大量矩阵运算，所以硬件和并行计算非常重要。</p>
+<p>讲授时要收住边界：这里是在建立教学定义和工程直觉，不把它说成哲学或认知科学上的最终结论。</p>
+<p>配套演示：可以打开 <code>matrix-parallel-demo.html</code>。P30 用它看行列相乘和累加，P31 用它过渡到并行阵列、内存搬运和吞吐，而不是把智能芯片讲成“负责训练调参数”。</p>
+</div>
+</div>
+</article><article class="slide-card" id="slide-32">
+<figure class="slide-preview">
+<img src="slide-previews/slide_32.png" alt="第二讲 slide 32 preview">
+<figcaption>P32 · 总结：会输出不等于理解</figcaption>
+</figure>
+<div>
+<div class="slide-meta">原课件第 31 页扩展</div>
+<h3>P32 · 总结：会输出不等于理解</h3>
+<div class="lecture-prose">
+<p>这一页要解决的问题是：闭环并注入边界。 页面上建议这样放：总结链条：多层 → 复杂边界；损失 → 错误度量；梯度 → 参数更新；奖励 → 长期目标；推理 → 矩阵计算。</p>
+<p>讲的时候可以这样展开：学 AI 不是为了崇拜模型，也不是为了害怕被替代，而是看清楚它每一层在做什么。模型会拟合，不代表理解；损失低，也不代表所有场景可靠。</p>
+<p>讲授时要收住边界：这里是在建立教学定义和工程直觉，不把它说成哲学或认知科学上的最终结论。</p>
+</div>
+</div>
+</article>
+</section>
+<p class="source-note">来源：第二讲_从多层感知器到训练与推理_课程文档.docx；原始 32 页 PDF 和 291MB 视频只作为源材料参考，不放入这个干净发布包。</p>
+</main>
+</body>
+</html>

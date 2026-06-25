@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MNIST 像素展开演示</title>
+<style>
+:root {
+  --ink: #172033;
+  --muted: #5b657a;
+  --line: #d9dfeb;
+  --paper: #ffffff;
+  --soft: #f5f7fb;
+  --accent: #155bd5;
+  --teal: #0f766e;
+  --warn: #a45f05;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--soft);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 44px; }
+header { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 30px; line-height: 1.2; letter-spacing: 0; }
+p { margin: 8px 0 0; color: var(--muted); }
+.stage {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 330px;
+  gap: 16px;
+}
+.canvas-wrap,
+.side {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+canvas { display: block; width: 100%; aspect-ratio: 16 / 10; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; }
+.controls { display: grid; gap: 8px; margin-top: 12px; }
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { border-color: var(--accent); background: #eef5ff; color: var(--accent); font-weight: 700; }
+.side h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: 0; }
+.box { border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #f8fafc; margin-top: 10px; }
+.box strong { color: var(--teal); }
+.note { margin-top: 14px; padding: 12px; border-left: 4px solid var(--warn); background: #fff7ed; color: #6f4205; }
+@media (max-width: 820px) {
+  main { padding: 14px 12px 36px; }
+  .stage { grid-template-columns: 1fr; }
+  h1 { font-size: 25px; }
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>MNIST 像素展开演示</h1>
+<p>课堂位置：第二讲 P11。目标是把“图像识别”翻译成学生能看懂的数据路径：图片、数字网格、输入向量、类别分数。</p>
+</header>
+<section class="stage">
+<div class="canvas-wrap">
+<canvas id="scene" width="900" height="560" aria-label="MNIST 像素展开画布"></canvas>
+<div class="controls">
+<button type="button" data-step="0" aria-pressed="true">1. 手写数字先是一张图</button>
+<button type="button" data-step="1" aria-pressed="false">2. 图变成像素网格</button>
+<button type="button" data-step="2" aria-pressed="false">3. 网格展开成向量</button>
+<button type="button" data-step="3" aria-pressed="false">4. 模型输出 10 类分数</button>
+</div>
+</div>
+<aside class="side">
+<h2 id="step-title">手写数字先是一张图</h2>
+<div id="readout"></div>
+<div class="note">边界：这不是 MNIST 的真实网络结构，只演示“图像如何进入模型”的表示路径。</div>
+</aside>
+</section>
+</main>
+<script>
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const buttons = [...document.querySelectorAll("button[data-step]")];
+const title = document.getElementById("step-title");
+const readout = document.getElementById("readout");
+let step = 0;
+
+const digit = [
+  "00111100",
+  "01100110",
+  "00000110",
+  "00001100",
+  "00011000",
+  "00110000",
+  "01111110",
+  "00000000",
+];
+
+const copy = [
+  ["手写数字先是一张图", "先不要说神经网络细节，只问学生：机器看到的是图片，还是数字？"],
+  ["图变成像素网格", "每个小格可以理解成一个亮度数字。真实 MNIST 是 28x28，这里缩成 8x8 方便看。"],
+  ["网格展开成向量", "模型接收的是一串输入值，不是人脑里看到的那个“7”的意义。"],
+  ["模型输出 10 类分数", "最后不是直接说“这一定是 7”，而是给 0 到 9 的分数，再取最大的类别。"],
+];
+
+function drawGrid(originX, originY, cell, activeOnly = false) {
+  for (let r = 0; r < digit.length; r += 1) {
+    for (let c = 0; c < digit[r].length; c += 1) {
+      const on = digit[r][c] === "1";
+      ctx.fillStyle = on ? "#155bd5" : activeOnly ? "#ffffff" : "#edf2f7";
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1;
+      ctx.fillRect(originX + c * cell, originY + r * cell, cell - 1, cell - 1);
+      ctx.strokeRect(originX + c * cell, originY + r * cell, cell - 1, cell - 1);
+    }
+  }
+}
+
+function drawVector() {
+  const x = 390;
+  const y = 125;
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("输入向量 x", x, y - 20);
+  for (let i = 0; i < 24; i += 1) {
+    const r = Math.floor(i / 8);
+    const c = i % 8;
+    const on = digit[r][c] === "1";
+    ctx.fillStyle = on ? "#155bd5" : "#edf2f7";
+    ctx.strokeStyle = "#d9dfeb";
+    ctx.fillRect(x + i * 14, y, 10, 120);
+    ctx.strokeRect(x + i * 14, y, 10, 120);
+  }
+  ctx.fillStyle = "#5b657a";
+  ctx.font = "17px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("这里只画前 24 个输入；真实会继续展开到 784 个。", x, y + 154);
+}
+
+function drawScores() {
+  const x = 625;
+  const y = 100;
+  const scores = [0.02, 0.03, 0.04, 0.02, 0.06, 0.03, 0.04, 0.88, 0.05, 0.03];
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("输出分数", x, y - 20);
+  scores.forEach((score, index) => {
+    const top = y + index * 34;
+    ctx.fillStyle = "#5b657a";
+    ctx.font = "16px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillText(String(index), x, top + 18);
+    ctx.fillStyle = index === 7 ? "#0f766e" : "#dbeafe";
+    ctx.fillRect(x + 28, top, score * 210, 20);
+    ctx.strokeStyle = "#d9dfeb";
+    ctx.strokeRect(x + 28, top, 210, 20);
+  });
+}
+
+function arrow(x1, y1, x2, y2) {
+  ctx.save();
+  ctx.strokeStyle = "#5b657a";
+  ctx.fillStyle = "#5b657a";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - 12 * Math.cos(angle - 0.5), y2 - 12 * Math.sin(angle - 0.5));
+  ctx.lineTo(x2 - 12 * Math.cos(angle + 0.5), y2 - 12 * Math.sin(angle + 0.5));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#172033";
+  ctx.font = "700 22px -apple-system, BlinkMacSystemFont, sans-serif";
+  ctx.fillText("图像", 110, 75);
+  drawGrid(80, 95, 26, step === 0);
+  if (step >= 1) {
+    ctx.fillStyle = "#5b657a";
+    ctx.font = "17px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.fillText("每格是一个亮度值", 80, 330);
+  }
+  if (step >= 2) {
+    arrow(310, 195, 370, 195);
+    drawVector();
+  }
+  if (step >= 3) {
+    arrow(565, 195, 610, 195);
+    drawScores();
+  }
+}
+
+function renderSide() {
+  title.textContent = copy[step][0];
+  readout.innerHTML = `<div class="box"><strong>讲法</strong><br>${copy[step][1]}</div>`;
+}
+
+buttons.forEach((button) => {
+  button.addEventListener("click", () => {
+    step = Number(button.dataset.step);
+    buttons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+    draw();
+    renderSide();
+  });
+});
+
+draw();
+renderSide();
+</script>
+</body>
+</html>
