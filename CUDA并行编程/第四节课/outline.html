@@ -1,0 +1,939 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 04：float、向量化访存与 half</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="page">
+<nav class="topbar"><a href="../index.html">课程总览</a><span>CUDA Foundation Course</span></nav>
+<header class="hero">
+<p class="eyebrow">Lesson 04 · 从诊断到优化动作</p>
+<h1>float、向量化访存与 half</h1>
+<p>第四节是行动课。第三节已经把 FP32 vector add 诊断为更像 memory-bound，这一节把诊断转成三条优化假设，并用代码、实验和工具证据逐步检验。</p>
+</header>
+<section>
+<h2>这一节为什么这样简化</h2>
+<p>本节不追求把所有 CUDA 优化一次讲完，只围绕 A/B/C 三条线：A 改 read/write 组织，B 降低 Q，C 提高 W。<code>float2/float4</code>、alignment、float3、PTX、NCU、half、half2 都要挂回这三条线。</p>
+</section>
+<section>
+<h2>PPT 故事线</h2>
+<ol>
+<li>先复用第三节的 memory-bound 诊断，并把优化拆成 A/B/C。</li>
+<li>进入假设 A：从标量访问到向量化访存，说明 type、byte、alignment 和尾巴处理。</li>
+<li>用实验、memory transaction、coalescing、float3、PTX、NCU 解释为什么结论不能只看类型名。</li>
+<li>进入假设 B：用 half 降低数据量，同时说明数值边界。</li>
+<li>最后讲 half2 和 <code>__hadd2</code>，把 packed half arithmetic 与 <code>float4</code> 区分开。</li>
+</ol>
+</section>
+<section>
+<h2>附加课堂文件</h2>
+<div class="attachment">
+<p><strong><a href="show-float.html">show-float.html</a></strong></p>
+<p>建议在 Slide 13 作为 type interpretation 预告短暂打开，在 Slide 28 和 Slide 38 重点使用；Slide 16/17 只把它当作单组 size 和单线程读取一组分量的辅助，不替代 PPT 上的 160B 分组和多线程映射图。操作时先选 <code>float1/float2/float4</code> 并点击“执行硬件读取”，让学生看占用空间、对齐要求、<code>LDG.32/64/128</code> 示意和分量进入寄存器；讲 float3 或错位地址时，把数据类型切到 <code>float3</code>，或者把地址偏移调到 4/8/12 这类非对齐位置，再点击执行。</p>
+<p>这个文件是课堂解释用的可视化演示，不是真实 GPU 硬件时序模拟。它用简化规则说明 size、alignment、指令拆分和 Global Memory 到 Registers 的移动，不用于得出实际性能数字。</p>
+</div>
+</section>
+<section>
+<h2>逐页目录</h2>
+<ol class="toc">
+<li><a href="#slide-01">P01 · float、向量化访存与 half</a></li>
+<li><a href="#slide-02">P02 · 第三课留下的问题</a></li>
+<li><a href="#slide-03">P03 · 第四课的角色</a></li>
+<li><a href="#slide-04">P04 · 三条优化假设</a></li>
+<li><a href="#slide-05">P05 · A/B/C 都围绕 read</a></li>
+<li><a href="#slide-06">P06 · 先进入假设 A</a></li>
+<li><a href="#slide-07">P07 · 正常写法：标量访问</a></li>
+<li><a href="#slide-08">P08 · 向量访问是什么</a></li>
+<li><a href="#slide-09">P09 · 用 SIMT 接 SIMD</a></li>
+<li><a href="#slide-10">P10 · 一组连续标量到底在哪里</a></li>
+<li><a href="#slide-11">P11 · 抽象数据摊平成序列</a></li>
+<li><a href="#slide-12">P12 · 序列落到 byte/address</a></li>
+<li><a href="#slide-13">P13 · type 决定如何解释 bytes</a></li>
+<li><a href="#slide-14">P14 · 回到 `C[i]=A[i]+B[i]`</a></li>
+<li><a href="#slide-15">P15 · baseline kernel：`add_float`</a></li>
+<li><a href="#slide-16">P16 · 160 bytes 小练习</a></li>
+<li><a href="#slide-17">P17 · 每个线程负责一组</a></li>
+<li><a href="#slide-18">P18 · `n / n2 / n4` 和尾巴</a></li>
+<li><a href="#slide-19">P19 · CUDA built-in vector types</a></li>
+<li><a href="#slide-20">P20 · `.x/.y/.z/.w` 和 `make_float*`</a></li>
+<li><a href="#slide-21">P21 · `float2` 显式版本</a></li>
+<li><a href="#slide-22">P22 · `float4` 显式版本</a></li>
+<li><a href="#slide-23">P23 · 关键边界：float4 不是 packed FP32</a></li>
+<li><a href="#slide-24">P24 · template 为什么出现</a></li>
+<li><a href="#slide-25">P25 · `__device__` 和 helper function</a></li>
+<li><a href="#slide-26">P26 · `constexpr` 和 VecTraits</a></li>
+<li><a href="#slide-27">P27 · `reinterpret_cast` 不是拷贝</a></li>
+<li><a href="#slide-28">P28 · float4 为什么要看 16B 对齐？</a></li>
+<li><a href="#slide-29">P29 · 正确性和计时</a></li>
+<li><a href="#slide-30">P30 · 假设 A 的性能观察</a></li>
+<li><a href="#slide-31">P31 · 为什么 AI 对 FP32 任务不变</a></li>
+<li><a href="#slide-32">P32 · useful bytes / transferred bytes</a></li>
+<li><a href="#slide-33">P33 · float4 为什么不总是最快</a></li>
+<li><a href="#slide-34">P34 · 向量化倍数不是越大越好</a></li>
+<li><a href="#slide-35">P35 · memory transaction</a></li>
+<li><a href="#slide-36">P36 · coalescing 是 warp 维度</a></li>
+<li><a href="#slide-37">P37 · vectorization vs coalescing</a></li>
+<li><a href="#slide-38">P38 · float3 为什么反常</a></li>
+<li><a href="#slide-39">P39 · NCU 看 float3</a></li>
+<li><a href="#slide-40">P40 · 浅看 PTX：float / float2 / float4</a></li>
+<li><a href="#slide-41">P41 · 浅看 PTX：float3</a></li>
+<li><a href="#slide-42">P42 · NCU 应该围绕问题看</a></li>
+<li><a href="#slide-43">P43 · 进入假设 B：half 降低 Q</a></li>
+<li><a href="#slide-44">P44 · FP32 vs FP16 数据量</a></li>
+<li><a href="#slide-45">P45 · FP16 结构感</a></li>
+<li><a href="#slide-46">P46 · CUDA half API</a></li>
+<li><a href="#slide-47">P47 · 舍入模式和数值边界</a></li>
+<li><a href="#slide-48">P48 · half 性能为什么不一定 2x</a></li>
+<li><a href="#slide-49">P49 · half2 是什么</a></li>
+<li><a href="#slide-50">P50 · manual half2 vs `__hadd2`</a></li>
+<li><a href="#slide-51">P51 · 实验矩阵和验证顺序</a></li>
+<li><a href="#slide-52">P52 · 总结和思考题</a></li>
+</ol>
+</section>
+<section>
+<h2>逐页讲课大纲</h2>
+<article class="slide-card" id="slide-01">
+<figure class="slide-preview">
+<img src="slide-previews/slide_01.jpg" alt="Lesson 04 slide 1 preview">
+<figcaption>P01 · float、向量化访存与 half</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从诊断到 A/B/C</div>
+<h3>P01 · float、向量化访存与 half</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘float、向量化访存与 half’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：从 memory-bound 诊断进入逐元素优化。；本节重点是代码、访存组织和证据。；不把 <code>float4</code> 讲成 packed FP32 arithmetic。。</p>
+<p>讲的时候按这条线推进：每个后续概念都要挂回 A 改怎么拿、B 改拿多大、C 改拿完做多少。 这里会碰到的概念有 memory-bound / compute-bound, float2 / float4, half / FP16。</p>
+<p>讲画面时，画面承担的作用：技术训练营封面，memory lanes + code motif。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到第三课留下的问题。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-02">
+<figure class="slide-preview">
+<img src="slide-previews/slide_02.jpg" alt="Lesson 04 slide 2 preview">
+<figcaption>P02 · 第三课留下的问题</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从诊断到 A/B/C</div>
+<h3>P02 · 第三课留下的问题</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘第三课留下的问题’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：FP32 vector add 是 <code>12 bytes + 1 FLOP</code>。；<code>AI ≈ 0.083</code>，更像 memory-bound。；NCU 可以验证 kernel 内部情况。；今天不重讲 Roofline。。</p>
+<p>讲的时候按这条线推进：每个后续概念都要挂回 A 改怎么拿、B 改拿多大、C 改拿完做多少。 这里会碰到的概念有 kernel, NCU, byte / FLOP, Arithmetic Intensity, Roofline。</p>
+<p>讲画面时，画面承担的作用：compact diagnostic chain.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到第四课的角色。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-03">
+<figure class="slide-preview">
+<img src="slide-previews/slide_03.jpg" alt="Lesson 04 slide 3 preview">
+<figcaption>P03 · 第四课的角色</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从诊断到 A/B/C</div>
+<h3>P03 · 第四课的角色</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘第四课的角色’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：第三课 负责诊断。；第四课 负责提出假设、写代码、看证据。；类型名不是目的，验证链路才是目的。。</p>
+<p>讲的时候按这条线推进：每个后续概念都要挂回 A 改怎么拿、B 改拿多大、C 改拿完做多少。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：diagnosis vs action split.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：今天不重讲 Roofline，也不把优化说成固定配方。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到三条优化假设。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-04">
+<figure class="slide-preview">
+<img src="slide-previews/slide_04.jpg" alt="Lesson 04 slide 4 preview">
+<figcaption>P04 · 三条优化假设</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从诊断到 A/B/C</div>
+<h3>P04 · 三条优化假设</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘三条优化假设’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：A：一次拿更多有用 input，改 read/write 组织。；B：减少实际 bytes，降低 Q。；C：一次 read 后做更多 process，提高 W。。</p>
+<p>讲的时候按这条线推进：每个后续概念都要挂回 A 改怎么拿、B 改拿多大、C 改拿完做多少。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：three-column framework.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：今天不重讲 Roofline，也不把优化说成固定配方。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到A/B/C 都围绕 read。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-05">
+<figure class="slide-preview">
+<img src="slide-previews/slide_05.jpg" alt="Lesson 04 slide 5 preview">
+<figcaption>P05 · A/B/C 都围绕 read</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从诊断到 A/B/C</div>
+<h3>P05 · A/B/C 都围绕 read</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘A/B/C 都围绕 read’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：A 改“怎么拿”。；B 改“拿多大”。；C 改“拿完做多少事”。；后续所有内容都挂回这三条。。</p>
+<p>讲的时候按这条线推进：每个后续概念都要挂回 A 改怎么拿、B 改拿多大、C 改拿完做多少。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：read path with three intervention points.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：今天不重讲 Roofline，也不把优化说成固定配方。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到先进入假设 A。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-06">
+<figure class="slide-preview">
+<img src="slide-previews/slide_06.jpg" alt="Lesson 04 slide 6 preview">
+<figcaption>P06 · 先进入假设 A</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P06 · 先进入假设 A</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘先进入假设 A’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：先不改数据类型精度。；先看同样 FP32 数据能不能搬得更规整。；从标量访问进入向量访问。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：section divider.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到正常写法：标量访问。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-07">
+<figure class="slide-preview">
+<img src="slide-previews/slide_07.jpg" alt="Lesson 04 slide 7 preview">
+<figcaption>P07 · 正常写法：标量访问</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P07 · 正常写法：标量访问</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘正常写法：标量访问’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：一个线程一次处理一个 <code>float</code>。；<code>T0 -&gt; D0</code>。；read A、read B、add、write C。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 线程。</p>
+<p>讲画面时，画面承担的作用：thread-to-single-data diagram.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到向量访问是什么。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-08">
+<figure class="slide-preview">
+<img src="slide-previews/slide_08.jpg" alt="Lesson 04 slide 8 preview">
+<figcaption>P08 · 向量访问是什么</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P08 · 向量访问是什么</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘向量访问是什么’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：一个线程一次面对一组连续标量。；<code>T0 -&gt; D[0-3]</code>。；这是访存组织的变化。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 线程。</p>
+<p>讲画面时，画面承担的作用：thread-to-lane group diagram.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到用 SIMT 接 SIMD。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-09">
+<figure class="slide-preview">
+<img src="slide-previews/slide_09.jpg" alt="Lesson 04 slide 9 preview">
+<figcaption>P09 · 用 SIMT 接 SIMD</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P09 · 用 SIMT 接 SIMD</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘用 SIMT 接 SIMD’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：SIMT：多个线程执行同一 kernel。；SIMD：一次操作面对一组数据。；两个维度可以同时存在。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 线程, kernel。</p>
+<p>讲画面时，画面承担的作用：2D comparison of thread dimension and data-lane dimension.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到一组连续标量到底在哪里。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-10">
+<figure class="slide-preview">
+<img src="slide-previews/slide_10.jpg" alt="Lesson 04 slide 10 preview">
+<figcaption>P10 · 一组连续标量到底在哪里</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P10 · 一组连续标量到底在哪里</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘一组连续标量到底在哪里’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：先不要背 <code>float4</code>。；先解释 <code>D[0-3]</code> 如何出现在内存里。；这一步把抽象数据带到 byte/address。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 byte / FLOP, float2 / float4。</p>
+<p>讲画面时，画面承担的作用：question bridge.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到抽象数据摊平成序列。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-11">
+<figure class="slide-preview">
+<img src="slide-previews/slide_11.jpg" alt="Lesson 04 slide 11 preview">
+<figcaption>P11 · 抽象数据摊平成序列</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P11 · 抽象数据摊平成序列</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘抽象数据摊平成序列’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：数组、矩阵、点云是逻辑视图。；内存里是一串元素。；有顺序，才有下标和地址。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：shapes flatten to D0 D1 D2 sequence.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到序列落到 byte/address。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-12">
+<figure class="slide-preview">
+<img src="slide-previews/slide_12.jpg" alt="Lesson 04 slide 12 preview">
+<figcaption>P12 · 序列落到 byte/address</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P12 · 序列落到 byte/address</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘序列落到 byte/address’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FP32 float 占 4 bytes。；<code>A[0]</code> 从地址 0 开始。；<code>A[1]</code> 从地址 4 开始。；下标步进对应 <code>sizeof(float)</code>。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：byte grid with 4-byte cells.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不是把 Host 数据重新拷贝成 <code>float4</code>；物理内存仍是一段连续 bytes。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到type 决定如何解释 bytes。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-13">
+<figure class="slide-preview">
+<img src="slide-previews/slide_13.jpg" alt="Lesson 04 slide 13 preview">
+<figcaption>P13 · type 决定如何解释 bytes</figcaption>
+</figure>
+<div>
+<div class="slide-meta">向量访问前的 byte 视角</div>
+<h3>P13 · type 决定如何解释 bytes</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘type 决定如何解释 bytes’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：同一段内存物理上仍是连续 bytes。；<code>float*</code>、<code>float2*</code>、<code>float4*</code> 是不同解释方式。；不是把 Host 数据重新拷贝成 <code>float4</code>。。</p>
+<p>讲的时候按这条线推进：讲 <code>float4</code> 前先讲同一段 bytes 可以被不同 type 解释。 这里会碰到的概念有 Host / Device, byte / FLOP, float2 / float4。</p>
+<p>讲画面时，画面承担的作用：same memory strip interpreted by different lenses.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这一页可以配合打开 <code><a href="show-float.html">show-float.html</a></code>：可以短暂打开 <code>show-float.html</code> 作为 type interpretation 的预告。选择 <code>float1/float2/float4</code> 后点击“执行硬件读取”，让学生看到同一段 4B cell 如何被解释成 1/2/4 个分量。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到回到 <code>C[i]=A[i]+B[i]</code>。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-14">
+<figure class="slide-preview">
+<img src="slide-previews/slide_14.jpg" alt="Lesson 04 slide 14 preview">
+<figcaption>P14 · 回到 `C[i]=A[i]+B[i]`</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P14 · 回到 <code>C[i]=A[i]+B[i]</code></h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘回到 <code>C[i]=A[i]+B[i]</code>’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：第三课 的 read/compute/write 在这里复用。；标量 baseline 仍然是理解所有版本的参照物。；FP32 baseline 是 <code>12B + 1 FLOP</code>。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：code + ledger.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：这是 FP32 baseline 参照，不是优化结论；后面的 <code>float2/float4/half</code> 都要回到这个账本比较。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到baseline kernel：<code>add_float</code>。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-15">
+<figure class="slide-preview">
+<img src="slide-previews/slide_15.jpg" alt="Lesson 04 slide 15 preview">
+<figcaption>P15 · baseline kernel：`add_float`</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P15 · baseline kernel：<code>add_float</code></h3>
+<div class="lecture-prose">
+<p>可以先说：“这页不要逐行背代码，我们先看数据在哪、谁在执行、这一行解决哪个动作。” 这一页要讲清楚：展示完整 <code>add_float</code>。；<code>__global__</code>、idx、<code>if(i&lt;n)</code> 只唤醒。；真正新增问题是访存组织。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 kernel。</p>
+<p>讲画面时，画面承担的作用：large code card with callouts.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到160 bytes 小练习。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-16">
+<figure class="slide-preview">
+<img src="slide-previews/slide_16.jpg" alt="Lesson 04 slide 16 preview">
+<figcaption>P16 · 160 bytes 小练习</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P16 · 160 bytes 小练习</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘160 bytes 小练习’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float1: 160/4 = 40</code> 组。；<code>float2: 160/8 = 20</code> 组。；<code>float4: 160/16 = 10</code> 组。；这是教学分组，不等于真实 transaction 次数。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 byte / FLOP, float2 / float4, memory transaction。</p>
+<p>讲画面时，画面承担的作用：160-byte strip grouped three ways.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这一页可以配合打开 <code><a href="show-float.html">show-float.html</a></code>：这里不建议把动画当作 160 bytes 完整分组图。它只适合补充说明单组 size：<code>float1</code> 是 4B，<code>float2</code> 是 8B，<code>float4</code> 是 16B；160B 的 40/20/10 组仍以 PPT 练习图为准。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到每个线程负责一组。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-17">
+<figure class="slide-preview">
+<img src="slide-previews/slide_17.jpg" alt="Lesson 04 slide 17 preview">
+<figcaption>P17 · 每个线程负责一组</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P17 · 每个线程负责一组</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘每个线程负责一组’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：标量：<code>T0 -&gt; D0</code>。；float4：<code>T0 -&gt; D0,D1,D2,D3</code>。；<code>base = tid * Vec</code>。；线程索引和元素索引语义变化。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 这里会碰到的概念有 线程, float2 / float4。</p>
+<p>讲画面时，画面承担的作用：thread mapping grid.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这一页可以配合打开 <code><a href="show-float.html">show-float.html</a></code>：这里可以用动画说明“一个线程一次读取一组分量”的直觉。它不展示多个线程如何铺满整个数组，所以讲多线程映射时仍以 PPT 的线程/数据格子为主。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>n / n2 / n4</code> 和尾巴。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-18">
+<figure class="slide-preview">
+<img src="slide-previews/slide_18.jpg" alt="Lesson 04 slide 18 preview">
+<figcaption>P18 · `n / n2 / n4` 和尾巴</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P18 · <code>n / n2 / n4</code> 和尾巴</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>n / n2 / n4</code> 和尾巴’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>n</code> 是原始 float 元素数。；<code>n2</code> 是 float2 组数。；<code>n4</code> 是 float4 组数。；不能整除时用标量处理尾巴。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，画面承担的作用：table + tail strip.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到CUDA built-in vector types。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-19">
+<figure class="slide-preview">
+<img src="slide-previews/slide_19.jpg" alt="Lesson 04 slide 19 preview">
+<figcaption>P19 · CUDA built-in vector types</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P19 · CUDA built-in vector types</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘CUDA built-in vector types’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float2</code>、<code>float3</code>、<code>float4</code> 是 CUDA 内置向量类型。；size/alignment 决定后续解释。；<code>float3</code> 是关键反例。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 CUDA, float2 / float4, alignment, float3。</p>
+<p>讲画面时，画面承担的作用：type table.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>.x/.y/.z/.w</code> 和 <code>make_float*</code>。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-20">
+<figure class="slide-preview">
+<img src="slide-previews/slide_20.jpg" alt="Lesson 04 slide 20 preview">
+<figcaption>P20 · `.x/.y/.z/.w` 和 `make_float*`</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P20 · <code>.x/.y/.z/.w</code> 和 <code>make_float*</code></h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>.x/.y/.z/.w</code> 和 <code>make_float*</code>’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：向量类型通过 <code>.x/.y/.z/.w</code> 访问分量。；<code>make_float2</code> / <code>make_float4</code> 构造结果。；字段是逻辑视图，内存仍连续。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，画面承担的作用：component card.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>float2</code> 显式版本。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-21">
+<figure class="slide-preview">
+<img src="slide-previews/slide_21.jpg" alt="Lesson 04 slide 21 preview">
+<figcaption>P21 · `float2` 显式版本</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P21 · <code>float2</code> 显式版本</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>float2</code> 显式版本’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>const float2* A/B</code> 用 float2 方式读输入。；<code>float2 a = A[i]</code> 一次读一组两个 FP32。；<code>make_float2</code> 把两个结果组成一组。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，画面承担的作用：code card with three callouts.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>float4</code> 显式版本。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-22">
+<figure class="slide-preview">
+<img src="slide-previews/slide_22.jpg" alt="Lesson 04 slide 22 preview">
+<figcaption>P22 · `float4` 显式版本</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P22 · <code>float4</code> 显式版本</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>float4</code> 显式版本’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float4 a = A[i]</code> 一次读一组四个 FP32。；<code>a.x/a.y/a.z/a.w</code> 分别参与加法。；仍然是四个 FP32 分量加法。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，画面承担的作用：code card plus lane labels.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到关键边界：float4 不是 packed FP32。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-23">
+<figure class="slide-preview">
+<img src="slide-previews/slide_23.jpg" alt="Lesson 04 slide 23 preview">
+<figcaption>P23 · 关键边界：float4 不是 packed FP32</figcaption>
+</figure>
+<div>
+<div class="slide-meta">baseline、float2、float4</div>
+<h3>P23 · 关键边界：float4 不是 packed FP32</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘关键边界：float4 不是 packed FP32’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float4</code> 主要讲向量化访存。；普通 FP32 arithmetic 仍按分量写。；后面的 <code>half2 + __hadd2</code> 才是 packed half arithmetic 示例。。</p>
+<p>讲的时候按这条线推进：读代码时先看每个线程负责几个元素，再看 <code>.x/.y/.z/.w</code>。 这一页是概念纠偏页，重点是区分 <code>float4</code> 的访存组织和后面 <code>half2/__hadd2</code> 的 packed half arithmetic。 这里会碰到的概念有 float2 / float4, half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：warning comparison: float4 memory grouping vs half2 packed arithmetic.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>__hadd2</code> 才是本节 packed half arithmetic 的明确例子，不要和 <code>float4</code> 混在一起。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到template 为什么出现。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-24">
+<figure class="slide-preview">
+<img src="slide-previews/slide_24.jpg" alt="Lesson 04 slide 24 preview">
+<figcaption>P24 · template 为什么出现</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P24 · template 为什么出现</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘template 为什么出现’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：float、float2、float4 代码结构相似。；template 把类型变成参数。；目的只是减少重复，不是本节主角。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，画面承担的作用：repeated code collapsed into template.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>__device__</code> 和 helper function。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-25">
+<figure class="slide-preview">
+<img src="slide-previews/slide_25.jpg" alt="Lesson 04 slide 25 preview">
+<figcaption>P25 · `__device__` 和 helper function</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P25 · <code>__device__</code> 和 helper function</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>__device__</code> 和 helper function’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>__device__</code> 函数在 GPU device 侧执行。；它可以被 kernel 或 device 函数调用。；用来封装分量加法。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 CPU / GPU 分工, kernel。</p>
+<p>讲画面时，画面承担的作用：kernel calls device helper.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不满足 alignment 和长度边界时，代码必须处理 tail 或退回安全路径。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>constexpr</code> 和 VecTraits。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-26">
+<figure class="slide-preview">
+<img src="slide-previews/slide_26.jpg" alt="Lesson 04 slide 26 preview">
+<figcaption>P26 · `constexpr` 和 VecTraits</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P26 · <code>constexpr</code> 和 VecTraits</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>constexpr</code> 和 VecTraits’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：向量宽度可以在编译期确定。；<code>constexpr</code> 服务 <code>n2/n4/tail/static_assert</code>。；不扩展成 C++ 模板课。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：compile-time constants card.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不满足 alignment 和长度边界时，代码必须处理 tail 或退回安全路径。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到<code>reinterpret_cast</code> 不是拷贝。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-27">
+<figure class="slide-preview">
+<img src="slide-previews/slide_27.jpg" alt="Lesson 04 slide 27 preview">
+<figcaption>P27 · `reinterpret_cast` 不是拷贝</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P27 · <code>reinterpret_cast</code> 不是拷贝</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘<code>reinterpret_cast</code> 不是拷贝’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：数据物理上仍是一长条 float。；kernel 里用 <code>float4*</code> 解释同一段内存。；需要满足 alignment 和长度边界。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 kernel, float2 / float4, alignment。</p>
+<p>讲画面时，画面承担的作用：same memory strip with float and float4 overlays.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到float4 为什么要看 16B 对齐？。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-28">
+<figure class="slide-preview">
+<img src="slide-previews/slide_28.jpg" alt="Lesson 04 slide 28 preview">
+<figcaption>P28 · float4 为什么要看 16B 对齐？</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P28 · float4 为什么要看 16B 对齐？</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘float4 为什么要看 16B 对齐？’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：<code>float4</code> 占 16B，也希望从 16B 边界开始。；用 <code>uintptr_t</code> 检查地址。；不对齐会影响访存形态。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 这里会碰到的概念有 float2 / float4, alignment。</p>
+<p>讲画面时，画面承担的作用：aligned vs misaligned 16-byte blocks.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这一页可以配合打开 <code><a href="show-float.html">show-float.html</a></code>：这是最适合打开动画的页面。先选 <code>float4</code>、offset 0，点击“执行硬件读取”看 16B 对齐和 <code>LDG.128</code>；再把 offset 调成 4 或 8 后执行，观察 HUD 变成未对齐/标量降级，用来说明 16B 起点边界。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到正确性和计时。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-29">
+<figure class="slide-preview">
+<img src="slide-previews/slide_29.jpg" alt="Lesson 04 slide 29 preview">
+<figcaption>P29 · 正确性和计时</figcaption>
+</figure>
+<div>
+<div class="slide-meta">工程化封装和边界检查</div>
+<h3>P29 · 正确性和计时</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘正确性和计时’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：先用 baseline/reference 校验。；FP32 看 max error。；kernel time 和 total time 分开。；warmup / repeat 降低测量噪声。。</p>
+<p>讲的时候按这条线推进：强调这些不是炫技 C++，而是在服务不同向量宽度的同一条实验线。 这里会碰到的概念有 kernel。</p>
+<p>讲画面时，画面承担的作用：benchmark checklist.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不满足 alignment 和长度边界时，代码必须处理 tail 或退回安全路径。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到假设 A 的性能观察。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-30">
+<figure class="slide-preview">
+<img src="slide-previews/slide_30.jpg" alt="Lesson 04 slide 30 preview">
+<figcaption>P30 · 假设 A 的性能观察</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P30 · 假设 A 的性能观察</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘假设 A 的性能观察’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float2/float4</code> 相比 <code>float</code> 可能提升。；<code>float2</code> 在原实验里可能最快。；<code>float3</code> 可能反常甚至更慢。；下一页解释为什么不能过度概括。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 float2 / float4, float3。</p>
+<p>讲画面时，这一页应作为原实验结果/证据页来讲：用时间观察支撑 <code>float2/float4/float3</code> 的差异，而不是凭类型名下结论。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到为什么 AI 对 FP32 任务不变。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-31">
+<figure class="slide-preview">
+<img src="slide-previews/slide_31.jpg" alt="Lesson 04 slide 31 preview">
+<figcaption>P31 · 为什么 AI 对 FP32 任务不变</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P31 · 为什么 AI 对 FP32 任务不变</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘为什么 AI 对 FP32 任务不变’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：同样 N 个 FP32 add。；有用计算仍是 N FLOPs。；有用数据仍是读 A、读 B、写 C。；改的是实际访存效率，不是有用 AI。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP, Arithmetic Intensity。</p>
+<p>讲画面时，画面承担的作用：equation showing unchanged useful FLOPs/bytes.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：这里说的是 useful AI 不变；实际性能变化来自访存形态、transaction、coalescing 和硬件利用率。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到useful bytes / transferred bytes。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-32">
+<figure class="slide-preview">
+<img src="slide-previews/slide_32.jpg" alt="Lesson 04 slide 32 preview">
+<figcaption>P32 · useful bytes / transferred bytes</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P32 · useful bytes / transferred bytes</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘useful bytes / transferred bytes’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：硬件可能按块搬数据。；搬来的 bytes 有多少被用上很关键。；向量化访存提高的是实际利用和规整程度。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：transaction block with used vs wasted bytes.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：vectorization 和 coalescing 相关但不等价；总时间不是唯一证据。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到float4 为什么不总是最快。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-33">
+<figure class="slide-preview">
+<img src="slide-previews/slide_33.jpg" alt="Lesson 04 slide 33 preview">
+<figcaption>P33 · float4 为什么不总是最快</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P33 · float4 为什么不总是最快</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘float4 为什么不总是最快’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：小数据下固定开销和未饱和带宽会影响。；数据量 x16 后，float4 可能变成最快。；结论要依赖实验规模和硬件。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 这里会碰到的概念有 float2 / float4。</p>
+<p>讲画面时，这一页承接原实验规模变化：小数据和大数据下最优向量宽度可能不同，图的作用是提醒结论依赖规模和硬件。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到向量化倍数不是越大越好。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-34">
+<figure class="slide-preview">
+<img src="slide-previews/slide_34.jpg" alt="Lesson 04 slide 34 preview">
+<figcaption>P34 · 向量化倍数不是越大越好</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P34 · 向量化倍数不是越大越好</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘向量化倍数不是越大越好’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：增加向量宽度会增加 register 使用。；可能影响 occupancy。；可能出现 spilling 到 local memory。；Vec8 是风险示例。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：vector width vs pressure curve.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：vectorization 和 coalescing 相关但不等价；总时间不是唯一证据。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到memory transaction。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-35">
+<figure class="slide-preview">
+<img src="slide-previews/slide_35.jpg" alt="Lesson 04 slide 35 preview">
+<figcaption>P35 · memory transaction</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P35 · memory transaction</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘memory transaction’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：global memory 访问常按 transaction 搬。；即使只需要少量 bytes，也可能搬一个数据块。；起始地址和块边界很重要。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 byte / FLOP, memory transaction。</p>
+<p>讲画面时，画面承担的作用：32B/128B block transaction diagram.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：vectorization 和 coalescing 相关但不等价；总时间不是唯一证据。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到coalescing 是 warp 维度。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-36">
+<figure class="slide-preview">
+<img src="slide-previews/slide_36.jpg" alt="Lesson 04 slide 36 preview">
+<figcaption>P36 · coalescing 是 warp 维度</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P36 · coalescing 是 warp 维度</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘coalescing 是 warp 维度’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：warp 内线程访问如果连续规整，更容易合并。；coalescing 关注多个线程的请求。；它和每个线程一次读几个元素是不同层面。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 线程, coalescing。</p>
+<p>讲画面时，画面承担的作用：32-thread warp accessing contiguous words.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：vectorization 和 coalescing 相关但不等价；总时间不是唯一证据。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到vectorization vs coalescing。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-37">
+<figure class="slide-preview">
+<img src="slide-previews/slide_37.jpg" alt="Lesson 04 slide 37 preview">
+<figcaption>P37 · vectorization vs coalescing</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P37 · vectorization vs coalescing</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘vectorization vs coalescing’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：vectorization：一个线程一次读写几个连续元素。；coalescing：一个 warp 内多个线程访问是否能合并。；二者相关但不等价。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 线程, coalescing。</p>
+<p>讲画面时，画面承担的作用：two-axis comparison.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：vectorization 和 coalescing 相关但不等价；总时间不是唯一证据。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到float3 为什么反常。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-38">
+<figure class="slide-preview">
+<img src="slide-previews/slide_38.jpg" alt="Lesson 04 slide 38 preview">
+<figcaption>P38 · float3 为什么反常</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P38 · float3 为什么反常</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘float3 为什么反常’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：<code>float3</code> size = 12B。；<code>float3</code> alignment = 4B。；三维逻辑自然，内存主路径不自然。；容易拆成多个 scalar load/store。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 alignment, float3。</p>
+<p>讲画面时，画面承担的作用：12B stride crossing 16B/transaction boundaries.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这一页可以配合打开 <code><a href="show-float.html">show-float.html</a></code>：讲 <code>float3</code> 反常时打开动画，把数据类型切到 <code>float3</code> 并点击执行。让学生看 size=12B、alignment=4B、指令流拆成多个 <code>LDG.32</code> 的教学示意，再强调这不是硬件时序模拟。</p>
+<p>这里要收住边界：<code>float3</code> 是反例，不要因为三维业务自然就默认它是高效内存形态。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到NCU 看 float3。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-39">
+<figure class="slide-preview">
+<img src="slide-previews/slide_39.jpg" alt="Lesson 04 slide 39 preview">
+<figcaption>P39 · NCU 看 float3</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P39 · NCU 看 float3</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘NCU 看 float3’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：LSU/load-store 指标异常。；读写操作更多。；解释不应只靠总时间。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 NCU, float3。</p>
+<p>讲画面时，这一页是 NCU 证据页，图的作用是把 float3 的异常从总时间追到 load/store 指标。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到浅看 PTX：float / float2 / float4。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-40">
+<figure class="slide-preview">
+<img src="slide-previews/slide_40.jpg" alt="Lesson 04 slide 40 preview">
+<figcaption>P40 · 浅看 PTX：float / float2 / float4</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P40 · 浅看 PTX：float / float2 / float4</h3>
+<div class="lecture-prose">
+<p>可以先说：“这页不要逐行背代码，我们先看数据在哪、谁在执行、这一行解决哪个动作。” 这一页要讲清楚：<code>float</code>: <code>ld.global.f32</code>。；<code>float2</code>: <code>ld.global.v2.f32</code>。；<code>float4</code>: <code>ld.global.v4.f32</code>。；PTX 关键词验证访存形态。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 float2 / float4, PTX。</p>
+<p>讲画面时，这一页是 PTX 证据页，用 <code>ld.global.f32/v2.f32/v4.f32</code> 关键词验证访存形态。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到浅看 PTX：float3。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-41">
+<figure class="slide-preview">
+<img src="slide-previews/slide_41.jpg" alt="Lesson 04 slide 41 preview">
+<figcaption>P41 · 浅看 PTX：float3</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P41 · 浅看 PTX：float3</h3>
+<div class="lecture-prose">
+<p>可以先说：“这页不要逐行背代码，我们先看数据在哪、谁在执行、这一行解决哪个动作。” 这一页要讲清楚：<code>float3</code> 没有形成理想 vector load。；可能表现为多个 scalar load/store。；这与 alignment/transaction 解释一致。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 先读变量和数据流，再读具体语法；代码页不要逐字念，重点是让导师知道这一页承担哪一个程序动作。 这里会碰到的概念有 alignment, memory transaction, float3, PTX。</p>
+<p>讲画面时，这一页是 float3 的 PTX 反例页，图的作用是对比理想 vector load 和被拆散的 scalar load/store。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float3</code> 是反例，不要因为三维业务自然就默认它是高效内存形态。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到NCU 应该围绕问题看。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-42">
+<figure class="slide-preview">
+<img src="slide-previews/slide_42.jpg" alt="Lesson 04 slide 42 preview">
+<figcaption>P42 · NCU 应该围绕问题看</figcaption>
+</figure>
+<div>
+<div class="slide-meta">实验证据与反例</div>
+<h3>P42 · NCU 应该围绕问题看</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘NCU 应该围绕问题看’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：看 Memory Workload。；看 Speed of Light。；看 LSU/load-store。；看 register/occupancy/spilling。；每次只围绕一个问题看证据。。</p>
+<p>讲的时候按这条线推进：让学生用问题驱动看证据：为什么 float2/float4 可能快，为什么 float3 可能慢。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 NCU。</p>
+<p>讲画面时，画面承担的作用：tool checklist.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到进入假设 B：half 降低 Q。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-43">
+<figure class="slide-preview">
+<img src="slide-previews/slide_43.jpg" alt="Lesson 04 slide 43 preview">
+<figcaption>P43 · 进入假设 B：half 降低 Q</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P43 · 进入假设 B：half 降低 Q</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘进入假设 B：half 降低 Q’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float2/float4</code> 改“怎么拿”。；<code>half</code> 改“拿多大”。；目标是降低 <code>AI = W/Q</code> 里的 Q。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 Arithmetic Intensity, float2 / float4, half / FP16。</p>
+<p>讲画面时，画面承担的作用：section divider with W/Q.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float2/float4</code> 改的是“怎么拿”，<code>half</code> 改的是“拿多大”；不要把 A 和 B 两条优化线混成同一个动作。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到FP32 vs FP16 数据量。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-44">
+<figure class="slide-preview">
+<img src="slide-previews/slide_44.jpg" alt="Lesson 04 slide 44 preview">
+<figcaption>P44 · FP32 vs FP16 数据量</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P44 · FP32 vs FP16 数据量</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘FP32 vs FP16 数据量’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FP32：读 4B + 读 4B + 写 4B = 12B。；FP16：读 2B + 读 2B + 写 2B = 6B。；数据量理论减半，AI 可能右移。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 Arithmetic Intensity, half / FP16。</p>
+<p>讲画面时，画面承担的作用：formula comparison.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：数据量理论减半不等于运行时间必然减半；还要看转换、cache、固定开销和硬件路径。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到FP16 结构感。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-45">
+<figure class="slide-preview">
+<img src="slide-previews/slide_45.jpg" alt="Lesson 04 slide 45 preview">
+<figcaption>P45 · FP16 结构感</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P45 · FP16 结构感</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘FP16 结构感’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FP16 仍是浮点数。；sign / exponent / fraction 三段结构。；位数减少带来范围和精度变化。；不展开成浮点数专题。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 half / FP16。</p>
+<p>讲画面时，画面承担的作用：bit fields for FP32 vs FP16.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：half 会改变数值精度和校验阈值，不能只看速度。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到CUDA half API。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-46">
+<figure class="slide-preview">
+<img src="slide-previews/slide_46.jpg" alt="Lesson 04 slide 46 preview">
+<figcaption>P46 · CUDA half API</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P46 · CUDA half API</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘CUDA half API’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>#include &lt;cuda_fp16.h&gt;</code>。；<code>__half</code> 表示一个 FP16。；<code>__hadd</code> 做 half 加法。；<code>__float2half</code> / <code>__half2float</code> 做转换。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 CUDA, float2 / float4, half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：API table.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>__hadd2</code> 才是本节 packed half arithmetic 的明确例子，不要和 <code>float4</code> 混在一起。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到舍入模式和数值边界。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-47">
+<figure class="slide-preview">
+<img src="slide-previews/slide_47.jpg" alt="Lesson 04 slide 47 preview">
+<figcaption>P47 · 舍入模式和数值边界</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P47 · 舍入模式和数值边界</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘舍入模式和数值边界’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>.rn/.rz/.ru/.rd</code> 是舍入模式。；half 精度更低。；正确性校验阈值要放宽。；快不代表数值完全等价。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 half / FP16。</p>
+<p>讲画面时，画面承担的作用：rounding mode cards.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：half 会改变数值精度和校验阈值，不能只看速度。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到half 性能为什么不一定 2x。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-48">
+<figure class="slide-preview">
+<img src="slide-previews/slide_48.jpg" alt="Lesson 04 slide 48 preview">
+<figcaption>P48 · half 性能为什么不一定 2x</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half 降低 Q</div>
+<h3>P48 · half 性能为什么不一定 2x</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘half 性能为什么不一定 2x’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：数据规模会影响观测。；转换开销、缓存、固定开销会影响。；FP16 的硬件 roof 可能和 FP32 不同。；不展开 Tensor Core。。</p>
+<p>讲的时候按这条线推进：先算 12B 到 6B，再讲 half API、舍入和验证阈值。 把性能和数值边界一起讲：数据量变小是一条线，精度、转换和硬件路径是另一条线。 这里会碰到的概念有 核心, half / FP16。</p>
+<p>讲画面时，这一页应作为 half 性能证据页来讲：数据量减半只是理论方向，实际速度还受转换、规模、缓存和硬件路径影响。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：half 会改变数值精度和校验阈值，不能只看速度。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到half2 是什么。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-49">
+<figure class="slide-preview">
+<img src="slide-previews/slide_49.jpg" alt="Lesson 04 slide 49 preview">
+<figcaption>P49 · half2 是什么</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half2 与总结</div>
+<h3>P49 · half2 是什么</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘half2 是什么’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>__half2</code> 表示两个 half 打包。；一个 half 是 2B。；两个 half 合起来是 4B。；打包类型不自动等于 packed arithmetic。。</p>
+<p>讲的时候按这条线推进：特别对比 <code>float4</code> 和 <code>__hadd2</code>：一个主要是访存组织，一个直接表达 packed half arithmetic。 把 <code>half2</code> 的打包表达和 <code>__hadd2</code> 的 packed arithmetic 讲清楚，不要和 <code>float2/float4</code> 的访存组织混在一起。 这里会碰到的概念有 half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：half + half -&gt; half2 packing diagram.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>__hadd2</code> 才是本节 packed half arithmetic 的明确例子，不要和 <code>float4</code> 混在一起。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到manual half2 vs <code>__hadd2</code>。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-50">
+<figure class="slide-preview">
+<img src="slide-previews/slide_50.jpg" alt="Lesson 04 slide 50 preview">
+<figcaption>P50 · manual half2 vs `__hadd2`</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half2 与总结</div>
+<h3>P50 · manual half2 vs <code>__hadd2</code></h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘manual half2 vs <code>__hadd2</code>’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：manual half2：拆 low/high，分别 <code>__hadd</code>，再合回。；<code>__hadd2</code>：直接表达 packed half arithmetic。；PTX 关键词：<code>add.f16x2</code>。；这和 <code>float4</code> 的 FP32 分量加法不同。。</p>
+<p>讲的时候按这条线推进：特别对比 <code>float4</code> 和 <code>__hadd2</code>：一个主要是访存组织，一个直接表达 packed half arithmetic。 把 <code>half2</code> 的打包表达和 <code>__hadd2</code> 的 packed arithmetic 讲清楚，不要和 <code>float2/float4</code> 的访存组织混在一起。 这里会碰到的概念有 float2 / float4, PTX, half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：two code panels side by side.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>__hadd2</code> 才是本节 packed half arithmetic 的明确例子，不要和 <code>float4</code> 混在一起。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到实验矩阵和验证顺序。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-51">
+<figure class="slide-preview">
+<img src="slide-previews/slide_51.jpg" alt="Lesson 04 slide 51 preview">
+<figcaption>P51 · 实验矩阵和验证顺序</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half2 与总结</div>
+<h3>P51 · 实验矩阵和验证顺序</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘实验矩阵和验证顺序’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>float</code> baseline。；<code>float2</code>、<code>float4</code>、<code>float3</code>。；<code>half</code>、<code>half2_manual</code>、<code>half2_hadd2</code>。；每个版本看 time、PTX、NCU。。</p>
+<p>讲的时候按这条线推进：特别对比 <code>float4</code> 和 <code>__hadd2</code>：一个主要是访存组织，一个直接表达 packed half arithmetic。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 NCU, float2 / float4, float3, PTX, half / FP16。</p>
+<p>讲画面时，画面承担的作用：experiment matrix table.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到总结和思考题。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-52">
+<figure class="slide-preview">
+<img src="slide-previews/slide_52.jpg" alt="Lesson 04 slide 52 preview">
+<figcaption>P52 · 总结和思考题</figcaption>
+</figure>
+<div>
+<div class="slide-meta">half2 与总结</div>
+<h3>P52 · 总结和思考题</h3>
+<div class="lecture-prose">
+<p>可以先说：“我们把今天真正要带走的话压成几句，后面的课就接在这些判断上。” 这一页要讲清楚：A：改怎么拿，<code>float2/float4</code>。；B：改拿多大，<code>half/half2</code>。；C：提高 W，fusion 后续承接。；思考：如何有效使用 <code>float3</code>？还有哪些向量化访存方式？。</p>
+<p>讲的时候按这条线推进：特别对比 <code>float4</code> 和 <code>__hadd2</code>：一个主要是访存组织，一个直接表达 packed half arithmetic。 用画面带学生看地址、边界和 warp/线程维度，避免只凭类型名字判断快慢。 这里会碰到的概念有 float2 / float4, float3, half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：closing summary + homework cards.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这一节到这里先停住，后面的问题就是把今天的判断继续落到下一节或后续练习里。”</p>
+</div>
+</div>
+</article>
+</section>
+<p class="source-note">本 HTML 大纲按发布 PPT 逐页对照整理；预览图来自当前发布 PPT 或 Lesson 03/04 的已生成 origin_image。它用于向导师说明每页讲什么和为什么这样设计，不替代课堂逐字稿。</p>
+</main>
+</body>
+</html>

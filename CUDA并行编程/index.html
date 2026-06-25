@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUDA并行编程 · HTML 大纲总览</title>
+<link rel="stylesheet" href="assets/course.css">
+</head>
+<body>
+<main class="page">
+<nav class="topbar"><span>CUDA并行编程</span><span>infiniTensor summer camp 2026</span></nav>
+<header class="hero">
+<p class="eyebrow">Course Overview</p>
+<h1>CUDA 并行编程课程发布包</h1>
+<p>这个目录是给导师和后续协作者看的干净发布包：每节课用一个 HTML 大纲对照 PPT 逐页说明讲解内容、设计意图、可视化作用、讲课提示和容易误解的边界。</p>
+</header>
+<section class="summary-grid">
+<div class="summary-box"><strong>课程数量</strong><p>4 节基础课</p></div>
+<div class="summary-box"><strong>PPT 页数</strong><p>150 页，分别为 28 / 30 / 40 / 52</p></div>
+<div class="summary-box"><strong>大纲形式</strong><p>只保留 HTML 大纲，不再以 LaTeX/PDF 大纲作为发布入口。</p></div>
+</section>
+<section>
+<h2>课程文件</h2>
+<div class="lesson-list">
+<a class="lesson-link" href="第一节课/outline.html"><strong>Lesson 01 · 并行编程与 CUDA 入门</strong><span>28 slides · outline.html + slides.pptx</span></a>
+<a class="lesson-link" href="第二节课/outline.html"><strong>Lesson 02 · CUDA 编程入门</strong><span>30 slides · outline.html + slides.pptx</span></a>
+<a class="lesson-link" href="第三节课/outline.html"><strong>Lesson 03 · CUDA 性能模型导论</strong><span>40 slides · outline.html + slides.pptx</span></a>
+<a class="lesson-link" href="第四节课/outline.html"><strong>Lesson 04 · float、向量化访存与 half</strong><span>52 slides · outline.html + slides.pptx</span></a>
+</div>
+</section>
+<section>
+<h2>总故事线</h2>
+<ol>
+<li>Lesson 01 建立并行、CPU/GPU 分工和 CUDA 入口。</li>
+<li>Lesson 02 用最小 vector add 程序跑通 Host/Device、线程层级、编译和运行验证。</li>
+<li>Lesson 03 从能跑进入性能诊断，建立 byte、FLOP、AI、Roofline 和 NCU 证据口径。</li>
+<li>Lesson 04 把诊断转成优化动作，围绕向量化访存、alignment、float3、half/half2 和实验验证展开。</li>
+</ol>
+</section>
+<p class="source-note">Lesson 04 额外包含 <a href="第四节课/show-float.html">show-float.html</a>，用于课堂演示向量化访存和 alignment 的简化动画。</p>
+</main>
+</body>
+</html>

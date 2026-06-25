@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU 向量化内存访存模拟器</title>
+    <style>
+        :root {
+            --primary: #0b57d0;
+            --surface: #ffffff;
+            --surface-container: #f0f4f9;
+            --surface-container-high: #e9ebf0;
+            --on-surface: #1b1c1d;
+            --on-surface-variant: #444746;
+            --stroke: #dcdfe5;
+            --chart-1: #1558d6;
+            --chart-2: #046e00;
+            --chart-3: #eaa937;
+            --chart-4: #c0151d;
+            --font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+
+        html, body {
+            max-width: 100%;
+            overflow-x: hidden;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background: var(--surface-container);
+            color: var(--on-surface);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            width: 100%;
+            max-width: 900px;
+        }
+
+        .top-link {
+            display: inline-flex;
+            align-items: center;
+            margin-bottom: 12px;
+            color: var(--primary);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+        }
+
+        h2 {
+            margin-top: 0;
+            text-align: center;
+            font-weight: 500;
+            color: var(--on-surface);
+        }
+
+        /* 仪表盘 HUD */
+        .hud {
+            display: flex;
+            justify-content: space-around;
+            padding: 16px 0;
+            margin-bottom: 24px;
+            border-top: 1px solid var(--stroke);
+            border-bottom: 1px solid var(--stroke);
+        }
+
+        .teaching-note {
+            margin-bottom: 20px;
+            padding: 14px 16px;
+            border: 1px solid #d7e3ff;
+            border-radius: 12px;
+            background: #f4f8ff;
+            color: var(--on-surface-variant);
+            font-size: 14px;
+        }
+
+        .teaching-note strong {
+            color: var(--on-surface);
+        }
+
+        .teaching-note ol {
+            margin: 8px 0 0;
+            padding-left: 20px;
+        }
+
+        .teaching-note li {
+            margin: 4px 0;
+        }
+
+        .hud-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .hud-label {
+            font-size: 13px;
+            color: var(--on-surface-variant);
+        }
+
+        .hud-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        /* 控制面板 */
+        .controls {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 24px;
+            align-items: center;
+            flex-wrap: wrap;
+            padding: 16px;
+            background: var(--surface-container-high);
+            border-radius: 12px;
+        }
+
+        .preset-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: -8px 0 24px;
+        }
+
+        .preset-row button {
+            background: var(--surface);
+            color: var(--primary);
+            border: 1px solid #b8caf3;
+        }
+
+        .preset-row button:hover {
+            background: #eef4ff;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* 拉杆专属样式 */
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 200px;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        label {
+            font-size: 14px;
+            color: var(--on-surface-variant);
+            font-weight: 500;
+        }
+
+        select, input[type="number"] {
+            padding: 8px 12px;
+            border: 1px solid var(--stroke);
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            font-family: monospace;
+        }
+        
+        input[type="number"] {
+            width: 50px;
+            text-align: center;
+        }
+
+        select:focus, input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(11, 87, 208, 0.2);
+        }
+
+        button {
+            padding: 8px 16px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #0a45b4;
+        }
+
+        button.secondary {
+            background: var(--surface);
+            color: var(--on-surface);
+            border: 1px solid var(--stroke);
+        }
+
+        button.secondary:hover {
+            background: var(--surface-container);
+        }
+
+        /* Canvas */
+        .canvas-shell {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            border-radius: 12px;
+            max-width: 100%;
+        }
+
+        canvas {
+            width: 100%;
+            min-width: 720px;
+            height: auto;
+            display: block;
+            background: var(--surface);
+            border-radius: 12px;
+            border: 1px solid var(--stroke);
+        }
+
+        @media (max-width: 640px) {
+            body {
+                padding: 10px;
+            }
+
+            .container {
+                padding: 16px;
+                border-radius: 12px;
+            }
+
+            .hud {
+                align-items: stretch;
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .controls {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .control-group,
+            .slider-container {
+                width: 100%;
+            }
+
+            .preset-row {
+                grid-template-columns: 1fr;
+            }
+
+            canvas {
+                min-width: 720px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <a class="top-link" href="outline.html#slide-28">← 回到 Lesson 04 大纲</a>
+        <h2>GPU 向量化内存访存模拟器</h2>
+
+        <div class="teaching-note">
+            <strong>课堂使用提示：</strong>这个页面用于 Lesson 04 的 type、alignment、float3 反例讲解，是简化教学演示，不是真实硬件时序模拟。
+            <ol>
+                <li>讲 16B 对齐时，点“float4 对齐”，再点“float4 错位”。</li>
+                <li>讲 <code>float3</code> 反常时，点“float3 反例”，观察 size、alignment 和指令流变化。</li>
+                <li>讲 160 bytes 分组或多个线程映射时，仍以 PPT 图为准，本页只辅助理解单组读取。</li>
+            </ol>
+        </div>
+        
+        <div class="hud">
+            <div class="hud-item"><span class="hud-label">占用空间</span><span class="hud-value" id="hud-size">16 Bytes</span></div>
+            <div class="hud-item"><span class="hud-label">对齐要求</span><span class="hud-value" id="hud-align">16 Bytes</span></div>
+            <div class="hud-item"><span class="hud-label">访存效率</span><span class="hud-value" id="hud-eff">完美对齐 (Vectorized)</span></div>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="dataType">数据类型:</label>
+                <select id="dataType">
+                    <option value="float1">float1</option>
+                    <option value="float2">float2</option>
+                    <option value="float3">float3</option>
+                    <option value="float4" selected>float4</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="offsetSlider">地址偏移 (Bytes):</label>
+                <div class="slider-container">
+                    <input type="range" id="offsetSlider" value="0" min="0" max="48" step="4">
+                    <input type="number" id="offsetNum" value="0" min="0" max="48" step="4">
+                </div>
+            </div>
+
+            <button id="btn-run">执行硬件读取</button>
+            <button id="btn-reset" class="secondary">重置</button>
+        </div>
+
+        <div class="preset-row" aria-label="课堂演示预设">
+            <button type="button" data-preset-type="float4" data-preset-offset="0">float4 对齐</button>
+            <button type="button" data-preset-type="float4" data-preset-offset="4">float4 错位</button>
+            <button type="button" data-preset-type="float3" data-preset-offset="0">float3 反例</button>
+        </div>
+
+        <div class="canvas-shell">
+            <canvas id="simCanvas" width="900" height="400"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // 核心配置字典
+        const CONFIG = {
+            float1: { size: 4, align: 4, comps: ['x'], instr: 'LDG.32' },
+            float2: { size: 8, align: 8, comps: ['x', 'y'], instr: 'LDG.64' },
+            float3: { size: 12, align: 4, comps: ['x', 'y', 'z'], instr: 'LDG.32' },
+            float4: { size: 16, align: 16, comps: ['x', 'y', 'z', 'w'], instr: 'LDG.128' }
+        };
+
+        const COLORS = ['#1558d6', '#046e00', '#eaa937', '#c0151d'];
+
+        // 状态管理
+        let state = { dataType: 'float4', offset: 0 };
+        let particles = [];
+        let isAnimating = false;
+        let animationProgress = 0;
+        let currentCycles = 0;
+        let currentInstructions = [];
+        let lastTime = 0;
+
+        // Canvas 初始化及高清屏支持
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const width = 900;
+        const height = 400;
+
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+        ctx.scale(dpr, dpr);
+        canvas.style.width = '100%';
+        canvas.style.height = 'auto';
+
+        // 更新仪表盘元数据
+        function updateMetadata() {
+            const cfg = CONFIG[state.dataType];
+            const isAligned = (state.offset % cfg.align === 0);
+            let eff = "完美对齐 (Vectorized)";
+            if (state.dataType === 'float3') eff = "降级 (指令拆分)";
+            else if (!isAligned) eff = "未对齐 (降级为标量)";
+
+            document.getElementById('hud-size').textContent = `${cfg.size} Bytes`;
+            document.getElementById('hud-align').textContent = `${cfg.align} Bytes`;
+            document.getElementById('hud-eff').textContent = eff;
+        }
+
+        // 重置动画
+        function resetSim() {
+            isAnimating = false;
+            animationProgress = 0;
+            particles = [];
+            currentCycles = 0;
+            currentInstructions = [];
+        }
+
+        // 执行访存逻辑分析并生成粒子动画参数
+        function runSim() {
+            if (isAnimating) return;
+            const cfg = CONFIG[state.dataType];
+            const isAligned = (state.offset % cfg.align === 0);
+
+            let instrCount = 1;
+            let typeName = cfg.instr;
+            
+            // 硬件调度逻辑
+            if (state.dataType === 'float3') {
+                instrCount = 3; 
+                typeName = 'LDG.32';
+            } else if (!isAligned) {
+                instrCount = cfg.comps.length; 
+                typeName = 'LDG.32';
+            }
+
+            currentInstructions = Array(instrCount).fill(typeName);
+            currentCycles = instrCount;
+            isAnimating = true;
+            animationProgress = 0;
+            particles = [];
+
+            // 生成数据粒子
+            for (let i = 0; i < cfg.comps.length; i++) {
+                particles.push({
+                    comp: cfg.comps[i],
+                    memIdx: (state.offset / 4) + i,
+                    regIdx: i,
+                    startTime: (instrCount > 1) ? (i * 0.3) : 0, // 分发延迟
+                    duration: 0.8,
+                    color: COLORS[i],
+                    done: false
+                });
+            }
+        }
+
+        // 同步拉杆和数字输入框，并更新状态
+        function syncOffset(value) {
+            let val = parseInt(value) || 0;
+            // 确保为4的倍数，且在 0 - 48 范围内
+            val = Math.max(0, Math.min(48, Math.round(val / 4) * 4));
+            
+            document.getElementById('offsetSlider').value = val;
+            document.getElementById('offsetNum').value = val;
+            
+            if (state.offset !== val) {
+                state.offset = val;
+                resetSim(); 
+                updateMetadata();
+            }
+        }
+
+        // 绑定 UI 事件
+        document.getElementById('dataType').addEventListener('change', (e) => {
+            state.dataType = e.target.value;
+            resetSim(); updateMetadata();
+        });
+        
+        // 双向绑定地址偏移拉杆与输入框
+        document.getElementById('offsetSlider').addEventListener('input', (e) => syncOffset(e.target.value));
+        document.getElementById('offsetNum').addEventListener('input', (e) => syncOffset(e.target.value));
+        document.getElementById('offsetNum').addEventListener('change', (e) => syncOffset(e.target.value)); // 失去焦点或按回车时修正
+
+        document.getElementById('btn-run').addEventListener('click', runSim);
+        document.getElementById('btn-reset').addEventListener('click', resetSim);
+
+        document.querySelectorAll('[data-preset-type]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const type = button.getAttribute('data-preset-type');
+                const offset = Number(button.getAttribute('data-preset-offset') || 0);
+                state.dataType = type;
+                document.getElementById('dataType').value = type;
+                state.offset = offset;
+                document.getElementById('offsetSlider').value = offset;
+                document.getElementById('offsetNum').value = offset;
+                resetSim();
+                updateMetadata();
+                runSim();
+            });
+        });
+
+        // 主渲染循环
+        function draw(time) {
+            const dt = (time - lastTime) / 1000;
+            lastTime = time;
+
+            ctx.clearRect(0, 0, width, height);
+
+            const margin = 40;
+            const gridY = height * 0.75;
+            const regY = height * 0.25;
+            const cellCount = 16;
+            const cellW = (width - margin * 2) / cellCount;
+            const cellH = 50;
+            const cx = width / 2;
+
+            // 1. 绘制图例 (Legend)
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'left';
+            ['X', 'Y', 'Z', 'W'].forEach((c, i) => {
+                ctx.fillStyle = COLORS[i];
+                ctx.fillRect(margin + i * 70, 20, 12, 12);
+                ctx.fillStyle = '#444746';
+                ctx.fillText(`分量 ${c}`, margin + 16 + i * 70, 31);
+            });
+
+            // 2. 绘制区域标题
+            ctx.fillStyle = '#1b1c1d';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.fillText('寄存器组 (Registers)', margin, regY - 30);
+            ctx.fillText('全局显存 (Global Memory)', margin, gridY - 30);
+
+            // 3. 绘制显存网格
+            for (let i = 0; i < cellCount; i++) {
+                const x = margin + i * cellW;
+                const addr = i * 4;
+
+                ctx.strokeStyle = '#dcdfe5';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(x, gridY, cellW, cellH);
+
+                ctx.textAlign = 'center';
+                ctx.font = '10px monospace';
+                ctx.fillStyle = '#80858c';
+                ctx.fillText(addr, x + cellW/2, gridY + cellH + 15);
+
+                const cfg = CONFIG[state.dataType];
+                const startIdx = state.offset / 4;
+                const endIdx = startIdx + (cfg.size / 4);
+
+                // 标记占用的内存块
+                if (i >= startIdx && i < endIdx) {
+                    const compIdx = i - startIdx;
+                    ctx.fillStyle = COLORS[compIdx] + '33'; // 20% 透明度
+                    ctx.fillRect(x, gridY, cellW, cellH);
+
+                    ctx.fillStyle = COLORS[compIdx];
+                    ctx.font = 'bold 12px sans-serif';
+                    ctx.fillText(`[${cfg.comps[compIdx]}]`, x + cellW/2, gridY + cellH/2 + 5);
+
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = COLORS[compIdx];
+                    ctx.strokeRect(x, gridY, cellW, cellH);
+                }
+            }
+
+            // 4. 绘制寄存器
+            const regW = 60;
+            const regH = 40;
+            const regGap = 10;
+            const regStartX = cx - (4 * regW + 3 * regGap) / 2;
+
+            for (let i = 0; i < 4; i++) {
+                const x = regStartX + i * (regW + regGap);
+                ctx.strokeStyle = '#80858c';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 2]);
+                ctx.strokeRect(x, regY, regW, regH);
+                ctx.setLineDash([]);
+
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#444746';
+                ctx.font = '11px sans-serif';
+                ctx.fillText(`R${i}`, x + regW/2, regY - 5);
+            }
+
+            // 5. 绘制总线层级
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = '#dcdfe5';
+            ctx.beginPath();
+            ctx.moveTo(0, (regY + gridY) / 2);
+            ctx.lineTo(width, (regY + gridY) / 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#80858c';
+            ctx.font = '12px sans-serif';
+            ctx.fillText('Memory Bus / L2 Cache', width - 10, (regY + gridY) / 2 - 5);
+
+            // 6. 动画和粒子逻辑
+            if (isAnimating) {
+                animationProgress += dt;
+                let allDone = true;
+
+                particles.forEach(p => {
+                    const t = animationProgress - p.startTime;
+                    if (t < 0) { allDone = false; return; }
+
+                    const progress = Math.min(t / p.duration, 1);
+                    if (progress < 1) allDone = false;
+                    else p.done = true;
+
+                    const startX = margin + p.memIdx * cellW + cellW/2;
+                    const startY = gridY + cellH/2;
+                    const endX = regStartX + p.regIdx * (regW + regGap) + regW/2;
+                    const endY = regY + regH/2;
+
+                    // 缓动函数
+                    const ease = progress * progress * (3 - 2 * progress);
+                    const curX = startX + (endX - startX) * ease;
+                    const curY = startY + (endY - startY) * ease;
+
+                    // 连线轨迹
+                    ctx.strokeStyle = p.color + '66';
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(curX, curY);
+                    ctx.stroke();
+
+                    // 数据包圆点
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(curX, curY, 10, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 数据包文字
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 10px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(p.comp.toUpperCase(), curX, curY + 4);
+                });
+
+                // 绘制指令标签气泡
+                if (currentInstructions.length > 0) {
+                    const instrText = currentInstructions.join(' + ');
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    ctx.strokeStyle = '#dcdfe5';
+                    ctx.lineWidth = 1;
+                    const tagText = `指令流: ${instrText} (${currentCycles} 周期)`;
+                    
+                    ctx.font = 'bold 12px sans-serif';
+                    const tw = ctx.measureText(tagText).width;
+                    const boxX = cx - tw/2 - 12;
+                    const boxY = (regY + gridY) / 2 - 15;
+                    
+                    ctx.fillRect(boxX, boxY, tw + 24, 30);
+                    ctx.strokeRect(boxX, boxY, tw + 24, 30);
+                    
+                    ctx.fillStyle = '#0b57d0';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(tagText, cx, (regY + gridY) / 2 + 5);
+                }
+
+                if (allDone && animationProgress > 2.0) {
+                    isAnimating = false;
+                }
+            } else {
+                // 空闲时的交互提示闪烁
+                if (particles.length === 0 && Math.floor(time / 600) % 2 === 0) {
+                    ctx.fillStyle = '#80858c';
+                    ctx.textAlign = 'center';
+                    ctx.font = 'italic 14px sans-serif';
+                    ctx.fillText('点击 "执行硬件读取" 模拟访存过程', cx, (regY + gridY) / 2 + 5);
+                }
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        // 启动应用
+        updateMetadata();
+        requestAnimationFrame((t) => { lastTime = t; draw(t); });
+    </script>
+</body>
+</html>

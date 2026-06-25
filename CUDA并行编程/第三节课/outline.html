@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 03：CUDA 性能模型导论</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<main class="page">
+<nav class="topbar"><a href="../index.html">课程总览</a><span>CUDA Foundation Course</span></nav>
+<header class="hero">
+<p class="eyebrow">Lesson 03 · 性能诊断语言</p>
+<h1>CUDA 性能模型导论</h1>
+<p>第三节是诊断课。第二节已经让 vector add 能跑起来，这一节要回答：结果正确以后，怎样判断慢在哪里，怎样把 H2D/kernel/D2H、read/compute/write、byte/FLOP/bandwidth 放到同一套语言里。</p>
+</header>
+<section>
+<h2>这一节为什么这样简化</h2>
+<p>本节刻意不进入 <code>float2</code>、<code>float4</code>、<code>half2</code> 的代码实现。它只把判断链路讲稳：先拆总时间，再放大 kernel 内部，再算 AI，再用 Roofline 和 NCU 给出优化方向。具体动作留给第四节。</p>
+</section>
+<section>
+<h2>PPT 故事线</h2>
+<ol>
+<li>从能跑到跑得好：先说明为什么性能是成本、等待和体验问题。</li>
+<li>从 CUDA 总耗时进入 H2D、kernel、D2H，再把 Device 内部放大为 read/compute/write。</li>
+<li>建立 byte、FLOP、FLOPS、bandwidth、AI 的共同语言。</li>
+<li>把 vector add 放进 Roofline，判断更像 memory-bound。</li>
+<li>最后说明 NCU 如何把理论判断落到单 kernel 证据。</li>
+</ol>
+</section>
+<section>
+<h2>逐页目录</h2>
+<ol class="toc">
+<li><a href="#slide-01">P01 · CUDA 性能模型导论</a></li>
+<li><a href="#slide-02">P02 · 这节课的路线</a></li>
+<li><a href="#slide-03">P03 · 上节课已经解决什么</a></li>
+<li><a href="#slide-04">P04 · 正确性解决有没有，性能解决好不好</a></li>
+<li><a href="#slide-05">P05 · 为什么不是只有 N 大才优化</a></li>
+<li><a href="#slide-06">P06 · FPS 不是表格数字</a></li>
+<li><a href="#slide-07">P07 · 调饮流程：结果对但过程浪费</a></li>
+<li><a href="#slide-08">P08 · 回到 CUDA 总耗时</a></li>
+<li><a href="#slide-09">P09 · Nsys 看的是系统时间线</a></li>
+<li><a href="#slide-10">P10 · 从 H2D/D2H 问到 GPU 内部</a></li>
+<li><a href="#slide-11">P11 · 放大 Device：read / compute / write</a></li>
+<li><a href="#slide-12">P12 · GPU 内部的高层地图</a></li>
+<li><a href="#slide-13">P13 · IPO 模型</a></li>
+<li><a href="#slide-14">P14 · bit、byte、B 和 b</a></li>
+<li><a href="#slide-15">P15 · 类型大小决定数据量</a></li>
+<li><a href="#slide-16">P16 · FLOP：怎么数一次计算</a></li>
+<li><a href="#slide-17">P17 · FLOPS / TFLOPS</a></li>
+<li><a href="#slide-18">P18 · Memory Bandwidth</a></li>
+<li><a href="#slide-19">P19 · 为什么不能直接比</a></li>
+<li><a href="#slide-20">P20 · 内存墙</a></li>
+<li><a href="#slide-21">P21 · 冯诺依曼结构带来的事实</a></li>
+<li><a href="#slide-22">P22 · 回到 `C[i] = A[i] + B[i]`</a></li>
+<li><a href="#slide-23">P23 · 数据量账本</a></li>
+<li><a href="#slide-24">P24 · 计算量账本</a></li>
+<li><a href="#slide-25">P25 · 计算强度 AI</a></li>
+<li><a href="#slide-26">P26 · 0.083 为什么低</a></li>
+<li><a href="#slide-27">P27 · Roofline 要解决什么</a></li>
+<li><a href="#slide-28">P28 · Roofline 坐标轴</a></li>
+<li><a href="#slide-29">P29 · 从 vector add 的 AI 回到 Roofline 图</a></li>
+<li><a href="#slide-30">P30 · ridge point</a></li>
+<li><a href="#slide-31">P31 · A100 ridge point</a></li>
+<li><a href="#slide-32">P32 · vector add 放到 A100</a></li>
+<li><a href="#slide-33">P33 · memory-bound / compute-bound</a></li>
+<li><a href="#slide-34">P34 · Roofline 不是全部</a></li>
+<li><a href="#slide-35">P35 · 为什么需要 NCU</a></li>
+<li><a href="#slide-36">P36 · Nsys vs NCU</a></li>
+<li><a href="#slide-37">P37 · NCU Summary 看什么</a></li>
+<li><a href="#slide-38">P38 · NCU Roofline / Details</a></li>
+<li><a href="#slide-39">P39 · 诊断之后怎么办</a></li>
+<li><a href="#slide-40">P40 · 第三课 总结</a></li>
+</ol>
+</section>
+<section>
+<h2>逐页讲课大纲</h2>
+<article class="slide-card" id="slide-01">
+<figure class="slide-preview">
+<img src="slide-previews/slide_01.jpg" alt="Lesson 03 slide 1 preview">
+<figcaption>P01 · CUDA 性能模型导论</figcaption>
+</figure>
+<div>
+<div class="slide-meta">承接第二节</div>
+<h3>P01 · CUDA 性能模型导论</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘CUDA 性能模型导论’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：从“能跑”到“跑得好”。；本节目标是先判断瓶颈，再谈优化。；不急着讲 <code>float4</code> 或 <code>half2</code>。。</p>
+<p>讲的时候按这条线推进：复用第二节的 H2D/kernel/D2H，不要重新讲代码迁移。 开场先立边界：第三节负责诊断语言和证据口径，不提前讲第四节的类型优化实现。 这里会碰到的概念有 CUDA, float2 / float4, half / FP16, half2 / __hadd2。</p>
+<p>讲画面时，画面承担的作用：模板式封面，蓝色几何块 + 课程标题。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：<code>float4</code> 主要是访存组织和分量视图，不是 packed FP32 arithmetic。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到这节课的路线。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-02">
+<figure class="slide-preview">
+<img src="slide-previews/slide_02.jpg" alt="Lesson 03 slide 2 preview">
+<figcaption>P02 · 这节课的路线</figcaption>
+</figure>
+<div>
+<div class="slide-meta">承接第二节</div>
+<h3>P02 · 这节课的路线</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘这节课的路线’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：CUDA 总流程：H2D / kernel / D2H。；放大 Device 内部：read / compute / write。；建立单位：byte、FLOP、bandwidth。；用 AI / Roofline 判断方向，再用 NCU 验证。。</p>
+<p>讲的时候按这条线推进：复用第二节的 H2D/kernel/D2H，不要重新讲代码迁移。 开场先立边界：第三节负责诊断语言和证据口径，不提前讲第四节的类型优化实现。 这里会碰到的概念有 CUDA, Host / Device, kernel, NCU, byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：横向路线图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到上节课已经解决什么。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-03">
+<figure class="slide-preview">
+<img src="slide-previews/slide_03.jpg" alt="Lesson 03 slide 3 preview">
+<figcaption>P03 · 上节课已经解决什么</figcaption>
+</figure>
+<div>
+<div class="slide-meta">承接第二节</div>
+<h3>P03 · 上节课已经解决什么</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘上节课已经解决什么’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：Host / Device 流程已经跑通。；kernel 能在 GPU 上并行执行。；Nsys 已经能看到 H2D、kernel、D2H。。</p>
+<p>讲的时候按这条线推进：复用第二节的 H2D/kernel/D2H，不要重新讲代码迁移。 开场先立边界：第三节负责诊断语言和证据口径，不提前讲第四节的类型优化实现。 这里会碰到的概念有 并行, CPU / GPU 分工, Host / Device, kernel, Nsys。</p>
+<p>讲画面时，画面承担的作用：三段流程卡片。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，不负责解释单个 kernel 的全部内部瓶颈。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到正确性解决有没有，性能解决好不好。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-04">
+<figure class="slide-preview">
+<img src="slide-previews/slide_04.jpg" alt="Lesson 03 slide 4 preview">
+<figcaption>P04 · 正确性解决有没有，性能解决好不好</figcaption>
+</figure>
+<div>
+<div class="slide-meta">为什么性能值得讲</div>
+<h3>P04 · 正确性解决有没有，性能解决好不好</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘正确性解决有没有，性能解决好不好’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：结果对不代表过程快。；性能影响等待、稳定性和成本。；优化要看关键路径，不是所有代码都追极致。。</p>
+<p>讲的时候按这条线推进：用 FPS 和调饮流程把抽象性能拉回体感和过程。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：左右对照：正确性 vs 性能。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不要把所有代码都说成要极致优化；要看关键路径和频率。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到为什么不是只有 N 大才优化。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-05">
+<figure class="slide-preview">
+<img src="slide-previews/slide_05.jpg" alt="Lesson 03 slide 5 preview">
+<figcaption>P05 · 为什么不是只有 N 大才优化</figcaption>
+</figure>
+<div>
+<div class="slide-meta">为什么性能值得讲</div>
+<h3>P05 · 为什么不是只有 N 大才优化</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘为什么不是只有 N 大才优化’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：实时任务晚了就没意义。；有人在等待结果时，小任务也值得关心。；GPU 时间和服务器资源有成本。；高频执行会放大小浪费。。</p>
+<p>讲的时候按这条线推进：用 FPS 和调饮流程把抽象性能拉回体感和过程。 这里会碰到的概念有 CPU / GPU 分工。</p>
+<p>讲画面时，画面承担的作用：决策 checklist。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不要把所有代码都说成要极致优化；要看关键路径和频率。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到FPS 不是表格数字。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-06">
+<figure class="slide-preview">
+<img src="slide-previews/slide_06.jpg" alt="Lesson 03 slide 6 preview">
+<figcaption>P06 · FPS 不是表格数字</figcaption>
+</figure>
+<div>
+<div class="slide-meta">为什么性能值得讲</div>
+<h3>P06 · FPS 不是表格数字</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘FPS 不是表格数字’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：10 FPS 能显示但卡顿。；60 FPS 基本流畅。；144 FPS 更跟手。；性能最终体现为用户体感。。</p>
+<p>讲的时候按这条线推进：用 FPS 和调饮流程把抽象性能拉回体感和过程。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：三段帧时间/体验对比图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不要把所有代码都说成要极致优化；要看关键路径和频率。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到调饮流程：结果对但过程浪费。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-07">
+<figure class="slide-preview">
+<img src="slide-previews/slide_07.jpg" alt="Lesson 03 slide 7 preview">
+<figcaption>P07 · 调饮流程：结果对但过程浪费</figcaption>
+</figure>
+<div>
+<div class="slide-meta">为什么性能值得讲</div>
+<h3>P07 · 调饮流程：结果对但过程浪费</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘调饮流程：结果对但过程浪费’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：一杯饮料能喝等于结果正确。；多余走动、等待、返工会增加耗时。；批量时浪费被放大。；对应程序中的多余读写和资源等待。。</p>
+<p>讲的时候按这条线推进：用 FPS 和调饮流程把抽象性能拉回体感和过程。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：调饮流程图，不使用写实广告图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：不要把所有代码都说成要极致优化；要看关键路径和频率。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到回到 CUDA 总耗时。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-08">
+<figure class="slide-preview">
+<img src="slide-previews/slide_08.jpg" alt="Lesson 03 slide 8 preview">
+<figcaption>P08 · 回到 CUDA 总耗时</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P08 · 回到 CUDA 总耗时</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘回到 CUDA 总耗时’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>Total = T_H2D + T_kernel + T_D2H + fixed overhead</code>。；只看 kernel 快，不等于整条程序快。；简单加法里，搬运和固定成本可能很显眼。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 这里会碰到的概念有 CUDA, Host / Device, kernel。</p>
+<p>讲画面时，画面承担的作用：时间条拆分。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，NCU 才看单个 kernel 内部。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Nsys 看的是系统时间线。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-09">
+<figure class="slide-preview">
+<img src="slide-previews/slide_09.jpg" alt="Lesson 03 slide 9 preview">
+<figcaption>P09 · Nsys 看的是系统时间线</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P09 · Nsys 看的是系统时间线</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Nsys 看的是系统时间线’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：Nsys 看 CPU/GPU 协同和时间段。；H2D、kernel、D2H 在时间线上可分开。；后面 NCU 会看单个 kernel 内部。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 CPU / GPU 分工, Host / Device, kernel, Nsys, NCU。</p>
+<p>讲画面时，画面承担的作用：简化系统时间线界面。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，不负责解释单个 kernel 的全部内部瓶颈。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到从 H2D/D2H 问到 GPU 内部。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-10">
+<figure class="slide-preview">
+<img src="slide-previews/slide_10.jpg" alt="Lesson 03 slide 10 preview">
+<figcaption>P10 · 从 H2D/D2H 问到 GPU 内部</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P10 · 从 H2D/D2H 问到 GPU 内部</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘从 H2D/D2H 问到 GPU 内部’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：CPU-GPU 通信会慢。；GPU 内部 global memory 到 compute units 也要搬数据。；本节放大 Device 并行计算这一步。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 这里会碰到的概念有 并行, CPU / GPU 分工, Host / Device。</p>
+<p>讲画面时，画面承担的作用：放大镜从 Device 指向内部。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，NCU 才看单个 kernel 内部。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到放大 Device：read / compute / write。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-11">
+<figure class="slide-preview">
+<img src="slide-previews/slide_11.jpg" alt="Lesson 03 slide 11 preview">
+<figcaption>P11 · 放大 Device：read / compute / write</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P11 · 放大 Device：read / compute / write</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘放大 Device：read / compute / write’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：读 <code>A[i]</code> 和 <code>B[i]</code>。；做一次加法。；把 <code>C[i]</code> 写回 Device Memory。；GPU 内部也不是只有“算”。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 这里会碰到的概念有 CPU / GPU 分工, Host / Device。</p>
+<p>讲画面时，画面承担的作用：Device Memory -&gt; Compute Units -&gt; Device Memory。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，NCU 才看单个 kernel 内部。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到GPU 内部的高层地图。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-12">
+<figure class="slide-preview">
+<img src="slide-previews/slide_12.jpg" alt="Lesson 03 slide 12 preview">
+<figcaption>P12 · GPU 内部的高层地图</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P12 · GPU 内部的高层地图</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘GPU 内部的高层地图’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：Global Memory 大但远。；SM 内有 register、shared memory、ALU/core。；只建立高层地图，不讲体系结构细节。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 这里会碰到的概念有 CPU / GPU 分工, SM。</p>
+<p>讲画面时，画面承担的作用：简化层级图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，NCU 才看单个 kernel 内部。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到IPO 模型。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-13">
+<figure class="slide-preview">
+<img src="slide-previews/slide_13.jpg" alt="Lesson 03 slide 13 preview">
+<figcaption>P13 · IPO 模型</figcaption>
+</figure>
+<div>
+<div class="slide-meta">从总时间放大到 kernel 内部</div>
+<h3>P13 · IPO 模型</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘IPO 模型’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：Input/read：从内存读数据。；Process/compute：计算单元做运算。；Output/write：把结果写回。；input/output 跟不上会让 process 等。。</p>
+<p>讲的时候按这条线推进：让学生指出一行 <code>C[i]=A[i]+B[i]</code> 里哪些是读、算、写。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：三段 pipeline。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，NCU 才看单个 kernel 内部。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到bit、byte、B 和 b。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-14">
+<figure class="slide-preview">
+<img src="slide-previews/slide_14.jpg" alt="Lesson 03 slide 14 preview">
+<figcaption>P14 · bit、byte、B 和 b</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P14 · bit、byte、B 和 b</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘bit、byte、B 和 b’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>1 byte = 8 bits</code>。；<code>B</code> 是 Byte，<code>b</code> 是 bit。；GB/s 通常是 bytes/s。；FP32 的 4 bytes 后面要用。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：8 bits 合成 1 byte。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到类型大小决定数据量。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-15">
+<figure class="slide-preview">
+<img src="slide-previews/slide_15.jpg" alt="Lesson 03 slide 15 preview">
+<figcaption>P15 · 类型大小决定数据量</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P15 · 类型大小决定数据量</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘类型大小决定数据量’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FP16 = 2 bytes。；FP32 = 4 bytes，本节核心。；FP64 = 8 bytes。；类型大小直接影响读写数据量。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 这里会碰到的概念有 核心, byte / FLOP, half / FP16。</p>
+<p>讲画面时，画面承担的作用：类型大小表。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：这里的 FP16/FP32/FP64 只用于说明类型大小和数据量；half API、舍入和数值误差留到 Lesson 04。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到FLOP：怎么数一次计算。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-16">
+<figure class="slide-preview">
+<img src="slide-previews/slide_16.jpg" alt="Lesson 03 slide 16 preview">
+<figcaption>P16 · FLOP：怎么数一次计算</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P16 · FLOP：怎么数一次计算</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘FLOP：怎么数一次计算’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>a + b</code> 是 1 FLOP。；<code>a * b + c</code> 通常按 2 FLOPs 讲。；读内存、写内存不计入 FLOP。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：算式卡片。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到FLOPS / TFLOPS。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-17">
+<figure class="slide-preview">
+<img src="slide-previews/slide_17.jpg" alt="Lesson 03 slide 17 preview">
+<figcaption>P17 · FLOPS / TFLOPS</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P17 · FLOPS / TFLOPS</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘FLOPS / TFLOPS’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FLOPS 是每秒浮点操作数。；TFLOPS 是 <code>10^12 FLOP/s</code>。；A100 FP32 peak 约 19.5 TFLOPS。；理论峰值不等于真实程序性能。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：速度计/计数器。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Memory Bandwidth。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-18">
+<figure class="slide-preview">
+<img src="slide-previews/slide_18.jpg" alt="Lesson 03 slide 18 preview">
+<figcaption>P18 · Memory Bandwidth</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P18 · Memory Bandwidth</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Memory Bandwidth’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：bandwidth 是每秒最多搬多少数据。；A100 memory bandwidth 约 2039 GB/s。；bandwidth 问数据供给，FLOPS 问计算速度。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP, bandwidth。</p>
+<p>讲画面时，画面承担的作用：数据管道。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到为什么不能直接比。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-19">
+<figure class="slide-preview">
+<img src="slide-previews/slide_19.jpg" alt="Lesson 03 slide 19 preview">
+<figcaption>P19 · 为什么不能直接比</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P19 · 为什么不能直接比</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘为什么不能直接比’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：FLOP/s 和 byte/s 单位不同。；需要知道程序每搬多少数据、做多少计算。；这引出 Arithmetic Intensity。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP, Arithmetic Intensity。</p>
+<p>讲画面时，画面承担的作用：两个指标卡中间问号。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到内存墙。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-20">
+<figure class="slide-preview">
+<img src="slide-previews/slide_20.jpg" alt="Lesson 03 slide 20 preview">
+<figcaption>P20 · 内存墙</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P20 · 内存墙</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘内存墙’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：计算能力增长很快。；数据访问能力没有同步增长。；很多 kernel 不是不会算，而是数据送不够快。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 这里会碰到的概念有 kernel, Compute Capability。</p>
+<p>讲画面时，画面承担的作用：compute vs memory 趋势差距图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到冯诺依曼结构带来的事实。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-21">
+<figure class="slide-preview">
+<img src="slide-previews/slide_21.jpg" alt="Lesson 03 slide 21 preview">
+<figcaption>P21 · 冯诺依曼结构带来的事实</figcaption>
+</figure>
+<div>
+<div class="slide-meta">性能单位和内存墙</div>
+<h3>P21 · 冯诺依曼结构带来的事实</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘冯诺依曼结构带来的事实’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：处理器负责计算，内存负责存数据。；两者分开，所以计算前要读数据。；算完还要写回结果。。</p>
+<p>讲的时候按这条线推进：每个单位都要落到 vector add 后面会怎么算，不要孤立讲定义。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：processor-memory 分离图。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：读写内存不计入 FLOP；理论峰值不等于真实程序性能。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到回到 <code>C[i] = A[i] + B[i]</code>。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-22">
+<figure class="slide-preview">
+<img src="slide-previews/slide_22.jpg" alt="Lesson 03 slide 22 preview">
+<figcaption>P22 · 回到 `C[i] = A[i] + B[i]`</figcaption>
+</figure>
+<div>
+<div class="slide-meta">vector add 账本和 AI</div>
+<h3>P22 · 回到 <code>C[i] = A[i] + B[i]</code></h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘回到 <code>C[i] = A[i] + B[i]</code>’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：一行代码在硬件视角不是一句话。；它包含读 A、读 B、加法、写 C。；后面所有账本都从这里来。。</p>
+<p>讲的时候按这条线推进：逐项数：读 A、读 B、写 C、一次加法，然后得到 <code>1/12</code>。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：代码行拆成四个动作。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：AI 是程序特征，不是硬件参数；不要把它说成 GPU 的属性。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到数据量账本。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-23">
+<figure class="slide-preview">
+<img src="slide-previews/slide_23.jpg" alt="Lesson 03 slide 23 preview">
+<figcaption>P23 · 数据量账本</figcaption>
+</figure>
+<div>
+<div class="slide-meta">vector add 账本和 AI</div>
+<h3>P23 · 数据量账本</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘数据量账本’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：读 <code>A[i]</code>：4 bytes。；读 <code>B[i]</code>：4 bytes。；写 <code>C[i]</code>：4 bytes。；总计 12 bytes。。</p>
+<p>讲的时候按这条线推进：逐项数：读 A、读 B、写 C、一次加法，然后得到 <code>1/12</code>。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：ledger table.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：AI 是程序特征，不是硬件参数；不要把它说成 GPU 的属性。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到计算量账本。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-24">
+<figure class="slide-preview">
+<img src="slide-previews/slide_24.jpg" alt="Lesson 03 slide 24 preview">
+<figcaption>P24 · 计算量账本</figcaption>
+</figure>
+<div>
+<div class="slide-meta">vector add 账本和 AI</div>
+<h3>P24 · 计算量账本</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘计算量账本’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：FP32 加法是 1 FLOP。；N 个元素就是 N FLOPs。；数据量是 12N bytes。。</p>
+<p>讲的时候按这条线推进：逐项数：读 A、读 B、写 C、一次加法，然后得到 <code>1/12</code>。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：add operator + N scaling.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：AI 是程序特征，不是硬件参数；不要把它说成 GPU 的属性。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到计算强度 AI。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-25">
+<figure class="slide-preview">
+<img src="slide-previews/slide_25.jpg" alt="Lesson 03 slide 25 preview">
+<figcaption>P25 · 计算强度 AI</figcaption>
+</figure>
+<div>
+<div class="slide-meta">vector add 账本和 AI</div>
+<h3>P25 · 计算强度 AI</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘计算强度 AI’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>AI = FLOPs / Bytes</code>。；AI 是程序特征，不是硬件参数。；vector add：<code>1 / 12 ≈ 0.083 FLOP/byte</code>。。</p>
+<p>讲的时候按这条线推进：逐项数：读 A、读 B、写 C、一次加法，然后得到 <code>1/12</code>。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP, Arithmetic Intensity。</p>
+<p>讲画面时，画面承担的作用：large formula card.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：AI 是程序特征，不是硬件参数；不要把它说成 GPU 的属性。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到0.083 为什么低。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-26">
+<figure class="slide-preview">
+<img src="slide-previews/slide_26.jpg" alt="Lesson 03 slide 26 preview">
+<figcaption>P26 · 0.083 为什么低</figcaption>
+</figure>
+<div>
+<div class="slide-meta">vector add 账本和 AI</div>
+<h3>P26 · 0.083 为什么低</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘0.083 为什么低’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：读写很多，只做一次加法。；每搬 1 byte 做的计算很少。；低复用任务更容易被访存限制。。</p>
+<p>讲的时候按这条线推进：逐项数：读 A、读 B、写 C、一次加法，然后得到 <code>1/12</code>。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP。</p>
+<p>讲画面时，画面承担的作用：low reuse vs high reuse comparison.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：AI 是程序特征，不是硬件参数；不要把它说成 GPU 的属性。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Roofline 要解决什么。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-27">
+<figure class="slide-preview">
+<img src="slide-previews/slide_27.jpg" alt="Lesson 03 slide 27 preview">
+<figcaption>P27 · Roofline 要解决什么</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P27 · Roofline 要解决什么</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Roofline 要解决什么’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：0.083 到底低不低，要放到硬件上看。；Roofline 把程序特征和硬件能力放到同一张图。；它先给优化方向。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 Roofline。</p>
+<p>讲画面时，画面承担的作用：程序点和硬件 roof 合流。。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Roofline 坐标轴。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-28">
+<figure class="slide-preview">
+<img src="slide-previews/slide_28.jpg" alt="Lesson 03 slide 28 preview">
+<figcaption>P28 · Roofline 坐标轴</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P28 · Roofline 坐标轴</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Roofline 坐标轴’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：横轴：计算强度 AI。；纵轴：性能 P。；一个 kernel 可以落成图上的一个点。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 kernel, Arithmetic Intensity, Roofline。</p>
+<p>讲画面时，画面承担的作用：clean Roofline axes.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到从 vector add 的 AI 回到 Roofline 图。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-29">
+<figure class="slide-preview">
+<img src="slide-previews/slide_29.jpg" alt="Lesson 03 slide 29 preview">
+<figcaption>P29 · 从 vector add 的 AI 回到 Roofline 图</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P29 · 从 vector add 的 AI 回到 Roofline 图</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘从 vector add 的 AI 回到 Roofline 图’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：斜线：<code>P = beta * I</code>。；横线：<code>P = P_peak</code>。；左边带宽限制，右边算力限制。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 Arithmetic Intensity, Roofline。</p>
+<p>讲画面时，画面承担的作用：annotated roofline.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到ridge point。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-30">
+<figure class="slide-preview">
+<img src="slide-previews/slide_30.jpg" alt="Lesson 03 slide 30 preview">
+<figcaption>P30 · ridge point</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P30 · ridge point</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘ridge point’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>I_ridge = P_peak / beta</code>。；它是带宽限制和算力限制的分界。；它告诉我们吃满峰值算力需要的最低 AI。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 Arithmetic Intensity, Roofline。</p>
+<p>讲画面时，画面承担的作用：highlighted intersection.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到A100 ridge point。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-31">
+<figure class="slide-preview">
+<img src="slide-previews/slide_31.jpg" alt="Lesson 03 slide 31 preview">
+<figcaption>P31 · A100 ridge point</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P31 · A100 ridge point</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘A100 ridge point’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：<code>P_peak ≈ 19.5e12 FLOP/s</code>。；<code>beta ≈ 2.039e12 bytes/s</code>。；<code>I_ridge ≈ 9.56 FLOP/byte</code>。；这是教学估算，口径来自原课程材料。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 byte / FLOP, Roofline。</p>
+<p>讲画面时，画面承担的作用：formula + A100 spec cards.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到vector add 放到 A100。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-32">
+<figure class="slide-preview">
+<img src="slide-previews/slide_32.jpg" alt="Lesson 03 slide 32 preview">
+<figcaption>P32 · vector add 放到 A100</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P32 · vector add 放到 A100</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘vector add 放到 A100’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：vector add AI 约 0.083。；A100 ridge point 约 9.56。；<code>0.083 &lt;&lt; 9.56</code>，更像 memory-bound。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 Arithmetic Intensity, Roofline, memory-bound / compute-bound。</p>
+<p>讲画面时，画面承担的作用：point far left of ridge.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到memory-bound / compute-bound。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-33">
+<figure class="slide-preview">
+<img src="slide-previews/slide_33.jpg" alt="Lesson 03 slide 33 preview">
+<figcaption>P33 · memory-bound / compute-bound</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P33 · memory-bound / compute-bound</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘memory-bound / compute-bound’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：memory-bound：主要卡数据供给。；compute-bound：主要卡计算峰值。；不同瓶颈对应不同优化方向。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 这里会碰到的概念有 memory-bound / compute-bound。</p>
+<p>讲画面时，画面承担的作用：two-zone comparison.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Roofline 给方向，不解释所有缓存、访问模式和 occupancy 细节。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Roofline 不是全部。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-34">
+<figure class="slide-preview">
+<img src="slide-previews/slide_34.jpg" alt="Lesson 03 slide 34 preview">
+<figcaption>P34 · Roofline 不是全部</figcaption>
+</figure>
+<div>
+<div class="slide-meta">Roofline 判断方向</div>
+<h3>P34 · Roofline 不是全部</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Roofline 不是全部’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：它给方向，不给全部答案。；访问模式、cache、coalescing、occupancy、指令选择都会影响。；所以后面需要 NCU 和实验。。</p>
+<p>讲的时候按这条线推进：先讲坐标轴，再讲两条上限，最后把 vector add 点放到 A100。 先说单位和物理含义，再写公式；公式必须回到 vector add 的读、算、写账本。 这里会碰到的概念有 NCU, Roofline, coalescing。</p>
+<p>讲画面时，画面承担的作用：theory vs measurement.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到为什么需要 NCU。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-35">
+<figure class="slide-preview">
+<img src="slide-previews/slide_35.jpg" alt="Lesson 03 slide 35 preview">
+<figcaption>P35 · 为什么需要 NCU</figcaption>
+</figure>
+<div>
+<div class="slide-meta">NCU 验证入口</div>
+<h3>P35 · 为什么需要 NCU</h3>
+<div class="lecture-prose">
+<p>可以先问学生：“看到‘为什么需要 NCU’，你们觉得真正卡住我们的是什么？” 这一页要讲清楚：Roofline 给理论判断。；NCU 看具体 kernel 的实测数据。；判断要落到证据上。。</p>
+<p>讲的时候按这条线推进：只讲 NCU 回答什么问题：单 kernel 的 compute/memory throughput、Roofline 点、Speed of Light。 这里会碰到的概念有 kernel, NCU, Roofline。</p>
+<p>讲画面时，画面承担的作用：magnifying glass on kernel.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到Nsys vs NCU。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-36">
+<figure class="slide-preview">
+<img src="slide-previews/slide_36.jpg" alt="Lesson 03 slide 36 preview">
+<figcaption>P36 · Nsys vs NCU</figcaption>
+</figure>
+<div>
+<div class="slide-meta">NCU 验证入口</div>
+<h3>P36 · Nsys vs NCU</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘Nsys vs NCU’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：Nsys：系统时间线。；NCU：单 kernel profile。；两个工具回答的问题不同。。</p>
+<p>讲的时候按这条线推进：只讲 NCU 回答什么问题：单 kernel 的 compute/memory throughput、Roofline 点、Speed of Light。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 kernel, Nsys, NCU。</p>
+<p>讲画面时，画面承担的作用：two tool cards.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：Nsys 看系统时间线，不负责解释单个 kernel 的全部内部瓶颈。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到NCU Summary 看什么。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-37">
+<figure class="slide-preview">
+<img src="slide-previews/slide_37.jpg" alt="Lesson 03 slide 37 preview">
+<figcaption>P37 · NCU Summary 看什么</figcaption>
+</figure>
+<div>
+<div class="slide-meta">NCU 验证入口</div>
+<h3>P37 · NCU Summary 看什么</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘NCU Summary 看什么’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：kernel time。；compute throughput。；memory throughput。；先看方向，不展开工具课。。</p>
+<p>讲的时候按这条线推进：只讲 NCU 回答什么问题：单 kernel 的 compute/memory throughput、Roofline 点、Speed of Light。 先说工具回答什么问题，再说页面上的指标；不要把工具界面讲成按钮教程。 这里会碰到的概念有 kernel, NCU。</p>
+<p>讲画面时，画面承担的作用：simplified NCU summary table.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到NCU Roofline / Details。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-38">
+<figure class="slide-preview">
+<img src="slide-previews/slide_38.jpg" alt="Lesson 03 slide 38 preview">
+<figcaption>P38 · NCU Roofline / Details</figcaption>
+</figure>
+<div>
+<div class="slide-meta">NCU 验证入口</div>
+<h3>P38 · NCU Roofline / Details</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘NCU Roofline / Details’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：achieved point 离哪条 roof 更近。；Speed of Light 看 compute/memory 利用。；用实测验证 memory-bound。。</p>
+<p>讲的时候按这条线推进：只讲 NCU 回答什么问题：单 kernel 的 compute/memory throughput、Roofline 点、Speed of Light。 这里会碰到的概念有 NCU, Roofline, memory-bound / compute-bound。</p>
+<p>讲画面时，画面承担的作用：NCU roofline/detail card.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到诊断之后怎么办。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-39">
+<figure class="slide-preview">
+<img src="slide-previews/slide_39.jpg" alt="Lesson 03 slide 39 preview">
+<figcaption>P39 · 诊断之后怎么办</figcaption>
+</figure>
+<div>
+<div class="slide-meta">交给第四节</div>
+<h3>P39 · 诊断之后怎么办</h3>
+<div class="lecture-prose">
+<p>可以先说：“这一页先把‘诊断之后怎么办’讲清楚，后面的内容都从这个判断接出去。” 这一页要讲清楚：如果 bottleneck 在 memory，要先想 read/write。；三条方向：提高 input 效率、减少 Q、增加 W。；第四课 从这些方向进入代码。。</p>
+<p>讲的时候按这条线推进：收尾时让学生把 <code>float4</code>、half、fusion 分别挂到 A/B/C。 这里不需要额外展开新术语，重点是把页面角色讲清楚。</p>
+<p>讲画面时，画面承担的作用：three optimization paths.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：第三节到此为止，不讲第四节代码。 收尾时可以说：“这页先解决到这里，下一页我们把问题接到第三课 总结。”</p>
+</div>
+</div>
+</article>
+<article class="slide-card" id="slide-40">
+<figure class="slide-preview">
+<img src="slide-previews/slide_40.jpg" alt="Lesson 03 slide 40 preview">
+<figcaption>P40 · 第三课 总结</figcaption>
+</figure>
+<div>
+<div class="slide-meta">交给第四节</div>
+<h3>P40 · 第三课 总结</h3>
+<div class="lecture-prose">
+<p>可以先说：“我们把今天真正要带走的话压成几句，后面的课就接在这些判断上。” 这一页要讲清楚：会拆总耗时。；会算 AI。；会用 Roofline 判断方向。；会用 NCU 验证入口。；下一节进入向量化访存和 half。。</p>
+<p>讲的时候按这条线推进：收尾时让学生把 <code>float4</code>、half、fusion 分别挂到 A/B/C。 这里会碰到的概念有 NCU, Arithmetic Intensity, Roofline, half / FP16。</p>
+<p>讲画面时，画面承担的作用：compact checklist / closing.。 不要让学生只看装饰，要指着图、代码或表格说明它在支撑哪一个判断。</p>
+<p>这里要收住边界：NCU 在这里是验证入口，不展开成完整工具课。 收尾时可以说：“这一节到这里先停住，后面的问题就是把今天的判断继续落到下一节或后续练习里。”</p>
+</div>
+</div>
+</article>
+</section>
+<p class="source-note">本 HTML 大纲按发布 PPT 逐页对照整理；预览图来自当前发布 PPT 或 Lesson 03/04 的已生成 origin_image。它用于向导师说明每页讲什么和为什么这样设计，不替代课堂逐字稿。</p>
+</main>
+</body>
+</html>
